@@ -1,0 +1,35 @@
+[package]
+name = "edmondson-team-simulation"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "edmondson_team"
+path = "src/lib.rs"
+
+[[bin]]
+name = "edmondson"
+path = "src/main.rs"
+
+[dependencies]
+rand        = { version = "0.8", features = ["small_rng"] }
+csv         = "1.3"
+serde       = { version = "1.0", features = ["derive"] }
+serde_json  = "1.0"
+clap        = { version = "4.5", features = ["derive"] }
+chrono      = "0.4"
+
+# social-simulation framework (socsim) — ABM engine. Edmondson (1999) models the
+# causal chain support/coaching → ψ → learning behavior → team performance as a
+# team-level ABM on a within-team Watts–Strogatz network. The pinned commit
+# lives in Cargo.lock.
+socsim-core   = { git = "https://github.com/akitenkrad/rs-social-simulation-tools", branch = "main", package = "socsim-core" }
+socsim-engine = { git = "https://github.com/akitenkrad/rs-social-simulation-tools", branch = "main", package = "socsim-engine" }
+socsim-net    = { git = "https://github.com/akitenkrad/rs-social-simulation-tools", branch = "main", package = "socsim-net" }
+# Canonical mean/variance reused by the ICC MS_between / MS_within computation.
+socsim-metrics = { git = "https://github.com/akitenkrad/rs-social-simulation-tools", branch = "main", package = "socsim-metrics" }
+# LLM-driven voice_decision ablation — Ollama first / OpenAI fallback + prompt
+# cache + shared harness (no hand-rolled client).
+socsim-llm    = { git = "https://github.com/akitenkrad/rs-social-simulation-tools", branch = "main", package = "socsim-llm", features = ["live"] }
+# Output helpers (timestamp / run-dir / latest symlink / CSV+JSON writers).
+socsim-results = { git = "https://github.com/akitenkrad/rs-social-simulation-tools", branch = "main", package = "socsim-results" }

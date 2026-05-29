@@ -1,0 +1,13 @@
+[project]
+name = "edmondson1999-workspace"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "edmondson-tools",
+]
+
+[tool.uv.workspace]
+members = ["tools"]
+
+[tool.uv.sources]
+edmondson-tools = { workspace = true }

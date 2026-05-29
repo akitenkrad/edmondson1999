@@ -1,0 +1,106 @@
+<!-- edmondson1999 hero. Vault SVG style contract (palette + dark mode). -->
+<svg width="100%" viewBox="0 0 900 300" xmlns="http://www.w3.org/2000/svg" role="img">
+<title>Edmondson (1999) — Psychological Safety &amp; Team Learning</title>
+<desc>A team-level agent-based model of the causal chain context support and leader coaching → team psychological safety ψ → learning behavior → team performance. Small Watts–Strogatz teams whose shared-belief ψ rises feed a learning arrow that drives a performance bar.</desc>
+<style>
+  .t  { font-family: -apple-system, "Helvetica Neue", "Hiragino Sans", sans-serif; font-size: 14px; fill: #2C2C2A; }
+  .ts { font-family: -apple-system, "Helvetica Neue", "Hiragino Sans", sans-serif; font-size: 13px; fill: #444441; }
+  .tl { font-family: -apple-system, "Helvetica Neue", "Hiragino Sans", sans-serif; font-size: 12px; font-weight: 600; fill: #534AB7; letter-spacing: 2px; }
+  .title { font-family: -apple-system, "Helvetica Neue", "Hiragino Sans", sans-serif; font-size: 27px; font-weight: 600; fill: #2C2C2A; }
+  .glab { font-family: -apple-system, "Helvetica Neue", "Hiragino Sans", sans-serif; font-size: 11px; font-weight: 500; fill: #888780; letter-spacing: 0.5px; }
+  .clab { font-family: -apple-system, "Helvetica Neue", "Hiragino Sans", sans-serif; font-size: 11px; font-weight: 600; fill: #534AB7; }
+  .edge  { stroke: #C7C5BD; stroke-width: 1.2; opacity: 0.75; }
+  .chord { stroke: #534AB7; stroke-width: 1.2; opacity: 0.4; stroke-dasharray: 3 3; }
+  .flow  { stroke: #0F6E56; stroke-width: 2.4; opacity: 0.85; marker-end: url(#ah); }
+  .node  { stroke: #FAFAF8; stroke-width: 1.5; }
+  .nLo   { fill: #C7C5BD; }
+  .nHi   { fill: #534AB7; }
+  .barL  { fill: #0F6E56; }
+  .barP  { fill: #F4A259; }
+  .ah    { fill: #0F6E56; }
+  @media (prefers-color-scheme: dark) {
+    .t  { fill: #E5E5E2; }
+    .ts { fill: #C7C5BD; }
+    .tl { fill: #AFA9EC; }
+    .title { fill: #E5E5E2; }
+    .glab { fill: #8C8B85; }
+    .clab { fill: #AFA9EC; }
+    .edge  { stroke: #5F5E5A; }
+    .chord { stroke: #AFA9EC; }
+    .flow  { stroke: #3DA98C; }
+    .node  { stroke: #211F1C; }
+    .nLo   { fill: #5F5E5A; }
+    .nHi   { fill: #AFA9EC; }
+    .barL  { fill: #3DA98C; }
+    .barP  { fill: #FFB86B; }
+    .ah    { fill: #3DA98C; }
+  }
+</style>
+
+<defs>
+  <marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+    <path d="M 0 0 L 10 5 L 0 10 z" class="ah"/>
+  </marker>
+</defs>
+
+<!-- left: label + title -->
+<text x="40" y="58" class="tl">TEAM-LEVEL ABM · CAUSAL CHAIN</text>
+<text x="40" y="94" class="title">Psychological Safety</text>
+<text x="40" y="124" class="title">&amp; Team Learning</text>
+<text x="40" y="158" class="ts">Edmondson (1999)</text>
+<text x="40" y="184" class="t">ψ_i(t+1) = (1−λ)ψ_i + λ[α·s + β·c − γ·r + δ·ψ̄]</text>
+<text x="40" y="208" class="glab">support / coaching → ψ → learning → performance</text>
+<text x="40" y="232" class="glab">teams as within-team Watts–Strogatz small worlds</text>
+
+<!-- chain labels across the schematic -->
+<text x="520" y="40" class="clab">support · coaching</text>
+<text x="636" y="40" class="clab">ψ (shared belief)</text>
+<text x="772" y="40" class="clab">L → Π</text>
+
+<!-- centre-left: support/coaching feeding the team -->
+<g>
+  <circle class="node nHi" cx="540" cy="95"  r="7"/>
+  <circle class="node nHi" cx="540" cy="135" r="7"/>
+  <text x="500" y="180" class="glab">s, c</text>
+  <line class="flow" x1="552" y1="105" x2="618" y2="150"/>
+  <line class="flow" x1="552" y1="130" x2="618" y2="155"/>
+</g>
+
+<!-- centre: a small Watts–Strogatz team, nodes shaded by ψ level -->
+<g>
+  <line class="edge" x1="690.0" y1="95.0"  x2="722.0" y2="115.0"/>
+  <line class="edge" x1="722.0" y1="115.0" x2="722.0" y2="155.0"/>
+  <line class="edge" x1="722.0" y1="155.0" x2="690.0" y2="180.0"/>
+  <line class="edge" x1="690.0" y1="180.0" x2="650.0" y2="170.0"/>
+  <line class="edge" x1="650.0" y1="170.0" x2="630.0" y2="135.0"/>
+  <line class="edge" x1="630.0" y1="135.0" x2="650.0" y2="100.0"/>
+  <line class="edge" x1="650.0" y1="100.0" x2="690.0" y2="95.0"/>
+  <line class="chord" x1="722.0" y1="115.0" x2="650.0" y2="170.0"/>
+  <line class="chord" x1="630.0" y1="135.0" x2="690.0" y2="95.0"/>
+
+  <circle class="node nHi" cx="690.0" cy="95.0"  r="9"/>
+  <circle class="node nHi" cx="722.0" cy="115.0" r="9"/>
+  <circle class="node nHi" cx="722.0" cy="155.0" r="9"/>
+  <circle class="node nLo" cx="690.0" cy="180.0" r="9"/>
+  <circle class="node nHi" cx="650.0" cy="170.0" r="9"/>
+  <circle class="node nLo" cx="630.0" cy="135.0" r="9"/>
+  <circle class="node nHi" cx="650.0" cy="100.0" r="9"/>
+</g>
+
+<!-- right: learning → performance flow into bars -->
+<g>
+  <line class="flow" x1="735" y1="135" x2="800" y2="135"/>
+  <rect class="barL" x="808" y="150" width="20" height="45" rx="2"/>
+  <rect class="barP" x="836" y="120" width="20" height="75" rx="2"/>
+  <text x="804" y="212" class="glab">L</text>
+  <text x="836" y="212" class="glab">Π</text>
+</g>
+
+<!-- legend -->
+<g>
+  <circle class="node nHi" cx="540" cy="270" r="5"/><text x="550" y="274" class="glab">high ψ</text>
+  <circle class="node nLo" cx="612" cy="270" r="5"/><text x="622" y="274" class="glab">low ψ</text>
+  <rect class="barL" x="688" y="265" width="10" height="10" rx="1"/><text x="702" y="274" class="glab">learning</text>
+  <rect class="barP" x="772" y="265" width="10" height="10" rx="1"/><text x="786" y="274" class="glab">performance</text>
+</g>
+</svg>
