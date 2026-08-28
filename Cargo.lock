@@ -208,7 +208,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "edmondson-team-simulation"
+name = "edmondson-simulation"
 version = "0.1.0"
 dependencies = [
  "chrono",
