@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """reproduce_paper.py — one-command Edmondson (1999) reproduction (Track-B ABM).
 
-Runs end-to-end on a `run` results directory (teams.csv + metrics.csv):
+Runs end-to-end on a `run`'s replicate child runs (the pooled team cross-section):
 
   1. Table 4-8-style Baron & Kenny (1986) three-step OLS mediation of the chain
      support → ψ → L → Π, on the time-averaged team cross-section:
@@ -17,6 +17,14 @@ Runs end-to-end on a `run` results directory (teams.csv + metrics.csv):
 
 All statistics are compared against the §5 calibration anchors with PASS / off-
 anchor verdicts. Writes `table4_report.csv` and `mediation_bootstrap.csv`.
+
+チーム断面は子 run の `terminal` 行が持っている (Rust が計算した run 後半平均を
+そのまま読む)．図と同じく `manifest.csv` の外へ書くので，出力先は run ディレクトリ
+ではなく `<results-root>/<experiment>/figures/<run_slug>/` である．
+
+§5 のアンカー帯 (`ICC_PSI_BAND` 等) はこちらが決めた許容幅で，原著が印字した数では
+ない．原著の数は run の `reference.csv` にあり (`edmondson reproduce` が書く)，
+ここでは表示のためだけに使う．
 """
 
 from __future__ import annotations
@@ -28,6 +36,8 @@ import sys
 
 import numpy as np
 import pandas as pd
+
+from edmondson_tools import runs
 
 # §5 anchor bands.
 ICC_PSI_BAND = (0.25, 0.55)
@@ -71,49 +81,46 @@ def main(argv: list[str] | None = None) -> int:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--results-dir", "--results_dir", default="results/latest")
+    parser.add_argument("--results-dir", "--results_dir", default=None)
     parser.add_argument("--output-dir", "--output_dir", default=None)
     parser.add_argument("--bootstrap", type=int, default=10000, help="bootstrap resamples (default 1e4)")
     parser.add_argument("--seed", type=int, default=1999)
     args = parser.parse_args(argv)
 
-    results_dir = args.results_dir
-    output_dir = args.output_dir or results_dir
-    os.makedirs(output_dir, exist_ok=True)
+    run_dir = runs.resolve_run_dir(args.results_dir, subcommand="run")
+    output_dir = str(runs.analysis_output_dir(run_dir, args.output_dir))
 
     import statsmodels.api as sm
 
-    # Prefer the pooled multi-run cross-section (one row per team per run, with
-    # run-level ICC columns); fall back to deriving it from the last run's
-    # teams.csv if only that is present.
-    cs_path = os.path.join(results_dir, "team_cross_section.csv")
-    teams_path = os.path.join(results_dir, "teams.csv")
-    icc_psi = float("nan")
-    icc_l = float("nan")
-    if os.path.exists(cs_path):
-        cs = pd.read_csv(cs_path)
-        n_runs = cs["run"].nunique()
-        # ICC: one value per run → average.
-        icc_psi = float(cs.groupby("run")["icc_psi"].first().mean())
-        icc_l = float(cs.groupby("run")["icc_learning"].first().mean())
-        source_desc = f"{len(cs)} team observations pooled over {n_runs} runs"
-    elif os.path.exists(teams_path):
-        cs = _team_cross_section(pd.read_csv(teams_path))
-        n_runs = 1
-        source_desc = f"{len(cs)} teams (single run, second-half time averages)"
-        metrics_path = os.path.join(results_dir, "metrics.csv")
+    # 反復をプールしたチーム断面 (1 反復 1 チーム 1 行) と，反復ごとに 1 つの
+    # ICC 2 列．legacy な `results/<timestamp>/` は `team_cross_section.csv` を，
+    # それも無い古い形は `teams.csv` から断面を作って読む．
+    try:
+        cs = runs.cross_section(run_dir)
+    except (FileNotFoundError, SystemExit):
+        teams_path = os.path.join(str(run_dir), "teams.csv")
+        if not os.path.exists(teams_path):
+            print(
+                f"error: no team cross-section and no teams.csv in {run_dir}\n"
+                f"  run e.g. `cargo run --release -- run --decision-mode rule` first",
+                file=sys.stderr,
+            )
+            return 1
+        cs = _team_cross_section(pd.read_csv(teams_path, float_precision="round_trip"))
+        cs["run"] = 0
+        metrics_path = os.path.join(str(run_dir), "metrics.csv")
+        cs["icc_psi"] = float("nan")
+        cs["icc_learning"] = float("nan")
         if os.path.exists(metrics_path):
-            m = pd.read_csv(metrics_path)
+            m = pd.read_csv(metrics_path, float_precision="round_trip")
             last = m[m["t"] == m["t"].max()].iloc[0]
-            icc_psi = float(last.get("icc_psi", float("nan")))
-            icc_l = float(last.get("icc_learning", float("nan")))
-    else:
-        print(
-            f"error: need team_cross_section.csv or teams.csv in {results_dir}\n"
-            f"  run e.g. `cargo run --release -- run --decision-mode rule` first",
-            file=sys.stderr,
-        )
-        return 1
+            cs["icc_psi"] = float(last.get("icc_psi", float("nan")))
+            cs["icc_learning"] = float(last.get("icc_learning", float("nan")))
+    n_runs = cs["run"].nunique()
+    # ICC: one value per run → average.
+    icc_psi = float(cs.groupby("run")["icc_psi"].first().mean())
+    icc_l = float(cs.groupby("run")["icc_learning"].first().mean())
+    source_desc = f"{len(cs)} team observations pooled over {n_runs} replicates"
 
     n = len(cs)
     psi = cs["psi"].to_numpy()

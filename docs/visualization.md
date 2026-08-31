@@ -2,11 +2,18 @@
 
 # Visualization
 
-All tools read a results directory (`--results-dir`, default `results/latest`) and write PNGs / CSVs back into it (`--output-dir` to redirect).
+All tools resolve the run to read with `runvault path --latest` (`--results-dir` overrides it,
+and a legacy `results/<timestamp>/` can be passed straight in). Output goes to
+`<results-root>/<experiment>/figures/<run_slug>/` — outside the run directory, because
+`manifest.csv` is settled when the run finishes and a figure drawn afterwards carries no hash.
+`--output-dir` redirects it.
 
 ## `edmondson-tools visualize` (single run)
 
-From `teams.csv` / `metrics.csv`:
+From one replicate's team panel (`observation` events) and step metrics. The default is the
+**last** replicate, matching what the pre-runvault layout was able to keep; `--replicate N`
+picks another. Teams are not pooled across replicates: that would give the regression more
+power than the design has, which is the same inflation `reproduce` avoids.
 
 - `psi_learning_perf_timeseries.png` — team-mean ψ̄ / L / Π over time (the causal chain rising together).
 - `mediation_scatter.png` — two panels of the run's second-half team cross-section: ψ̄ → L and L → Π, each with the fitted slope B and correlation r annotated.
@@ -14,7 +21,7 @@ From `teams.csv` / `metrics.csv`:
 
 ## `edmondson-tools visualize-sweep`
 
-From `sweep_summary.csv`, three α × δ heatmaps:
+From the cells' `terminal` rows (one per trial, with the cell's conditions from its `parameters`), three α × δ heatmaps:
 
 - `sweep_icc_heatmap.png` — mean ICC(ψ) (anchor .39).
 - `sweep_mediation_heatmap.png` — mean mediation ratio (≥ .5 criterion).
@@ -22,7 +29,10 @@ From `sweep_summary.csv`, three α × δ heatmaps:
 
 ## `edmondson-tools show-experiment-settings`
 
-Pretty-prints `config.json` (run) or `sweep_config.json` (sweep) plus `llm_meta.json`; `--json` emits the merged structure as JSON.
+Pretty-prints the run's conditions (`config.json`'s `parameters`), its identity (`run.json`:
+`run_uid` / `config_hash` / `master_seed` / `replicate_index` / the `llm` block) and its
+run-scope metrics. `--subcommand` picks which subcommand's latest run to show; `--json` emits
+the three together. Legacy `config.json` / `sweep_config.json` directories still render.
 
 ## `edmondson-tools reproduce`
 

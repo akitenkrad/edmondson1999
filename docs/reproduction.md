@@ -6,7 +6,7 @@ The model maps to Edmondson (1999)'s field-study numbers by treating the simulat
 
 ## Stable team-level measures
 
-Team learning `L_k` and performance `Π_k` are noisy single-tick rates in small (n_k≈8) teams. The reproduction uses each team's **time-average over the run's second half** as the stable, survey-equivalent measure — exactly the cross-section written to `team_cross_section.csv`. ICC(ψ) is computed on the per-individual ψ at the final tick; ICC(L) on each individual's time-averaged voice rate grouped by team.
+Team learning `L_k` and performance `Π_k` are noisy single-tick rates in small (n_k≈8) teams. The reproduction uses each team's **time-average over the run's second half** as the stable, survey-equivalent measure — exactly the cross-section each replicate writes as its `terminal` events (one row per team). ICC(ψ) is computed on the per-individual ψ at the final tick; ICC(L) on each individual's time-averaged voice rate grouped by team.
 
 ## Per-trial averaging
 
@@ -30,7 +30,7 @@ Team learning `L_k` and performance `Π_k` are noisy single-tick rates in small 
 ## Rust vs Python
 
 - `cargo run --release -- reproduce` prints the anchors using the local OLS / ICC / Baron & Kenny implementations in `metrics.rs`.
-- `uv run edmondson-tools reproduce` reads `team_cross_section.csv` and recomputes the three-step mediation per trial with **statsmodels** (exact-t p-values), adds a **bootstrap** of the indirect effect a·b with a 95% bias-corrected percentile CI, runs the efficacy discriminant `L ~ ψ + efficacy`, and writes `table4_report.csv` + `mediation_bootstrap.csv`. The two paths agree on the anchor verdicts.
+- `uv run edmondson-tools reproduce` reads those `terminal` rows across the replicate child runs (it reads the numbers Rust computed rather than re-deriving the second-half average, so the same aggregation does not live in two places) and recomputes the three-step mediation per trial with **statsmodels** (exact-t p-values), adds a **bootstrap** of the indirect effect a·b with a 95% bias-corrected percentile CI, runs the efficacy discriminant `L ~ ψ + efficacy`, and writes `table4_report.csv` + `mediation_bootstrap.csv`. The two paths agree on the anchor verdicts.
 
 ## H5 / H8 (efficacy discriminant)
 

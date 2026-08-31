@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """visualize_sweep.py — sweep visualization for the Edmondson 1999 model.
 
-Reads `results/<timestamp>_sweep/sweep_summary.csv` and produces:
+Reads one row per trial from the sweep's cell child runs (`events.jsonl` の `terminal`
+行．旧 `sweep_summary.csv` の 1 行がこの 1 行にあたる) and produces:
   - sweep_icc_heatmap.png        : α × δ heatmap of mean ICC(ψ) (anchor .39)
   - sweep_mediation_heatmap.png  : α × δ heatmap of mean mediation ratio
   - sweep_r2_heatmap.png         : α × δ heatmap of mean ψ→L R² (anchor .63)
 
 Usage:
     uv run edmondson-tools visualize-sweep
-    uv run edmondson-tools visualize-sweep --results-dir results/<ts>_sweep
+    uv run edmondson-tools visualize-sweep --results-dir results/<ts>_sweep   # legacy も可
 """
 
 from __future__ import annotations
@@ -19,6 +20,8 @@ import os
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+
+from edmondson_tools import runs
 
 COLOR_BG = "#FAFAF8"
 
@@ -62,19 +65,13 @@ def main(argv: list[str] | None = None) -> int:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--results-dir", "--results_dir", default="results/latest")
+    parser.add_argument("--results-dir", "--results_dir", default=None)
     parser.add_argument("--output-dir", "--output_dir", default=None)
     args = parser.parse_args(argv)
 
-    results_dir = args.results_dir
-    output_dir = args.output_dir or results_dir
-    os.makedirs(output_dir, exist_ok=True)
-
-    path = os.path.join(results_dir, "sweep_summary.csv")
-    if not os.path.exists(path):
-        print(f"error: no sweep_summary.csv in {results_dir}", file=__import__("sys").stderr)
-        return 1
-    df = pd.read_csv(path)
+    sweep_dir = runs.resolve_run_dir(args.results_dir, subcommand="sweep")
+    output_dir = str(runs.analysis_output_dir(sweep_dir, args.output_dir))
+    df = runs.sweep_trials(sweep_dir)
 
     _heatmap(df, "icc_psi", "Mean ICC(ψ) over α × δ", 0.39, output_dir, "sweep_icc_heatmap.png")
     _heatmap(

@@ -9,8 +9,8 @@ cargo run --release -- run \
     --n-teams 90 --team-size 8 \
     --lambda 0.10 --alpha 0.30 --beta 0.25 --gamma 0.50 --delta 0.35 \
     --t-max 24 --runs 30 --seed 1999
-uv run edmondson-tools visualize --results-dir results/latest
-uv run edmondson-tools reproduce  --results-dir results/latest
+uv run edmondson-tools visualize
+uv run edmondson-tools reproduce
 ```
 
 The `run` prints each trial's ICC(ψ), ψ→L slope/R², and mediation ratio, then a pooled summary; `reproduce` checks every §5 anchor band.
@@ -22,7 +22,7 @@ cargo run --release -- sweep \
     --alpha-min 0.10 --alpha-max 0.50 --alpha-step 0.05 \
     --delta-min 0.10 --delta-max 0.60 --delta-step 0.10 \
     --runs 30 --seed 1999
-uv run edmondson-tools visualize-sweep --results-dir results/latest
+uv run edmondson-tools visualize-sweep
 ```
 
 Sweeping the context-support weight α and the shared-belief convergence weight δ shows how ICC(ψ), the mediation ratio, and the ψ→L R² move across the parameter grid. δ controls how strongly within-team beliefs converge (and so the between-team share of ψ variance, i.e. ICC); α controls how strongly support pulls ψ up.

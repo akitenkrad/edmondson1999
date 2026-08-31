@@ -10,6 +10,8 @@ dependencies = [
     "pillow>=10.0",
     "scipy>=1.11",
     "statsmodels>=0.14",
+    # run ディレクトリの読み方は runvault が持つ (read 側は pandas を使うので extra)．
+    "runvault[read]",
     "socsim-tools",
 ]
 

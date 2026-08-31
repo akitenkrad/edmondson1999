@@ -1,25 +1,39 @@
 //! Edmondson (1999) — Psychological Safety & Team Learning CLI.
 //!
 //! `run`       : single configuration; `--decision-mode {rule|llm}`.
-//! `sweep`     : Cartesian product over ψ-update params × seeds; one row per cell.
+//! `sweep`     : Cartesian product over ψ-update params × seeds; one child run per cell.
 //! `reproduce` : team-level cross-section against the §5 calibration anchors.
+//!
+//! 出力の置き場と同一性は runvault が持つ．タイムスタンプ付きディレクトリも
+//! `latest` シンボリックリンクもこちらでは作らず，`Run::start` が決めた run
+//! ディレクトリへ書く．
+//!
+//! `run` は «条件 + その反復» なので，親 run が反復リストを宣言し，反復 1 本ずつが
+//! 子 run になる．`sweep` はセル 1 つが子 run で，そのセルの試行は `events.jsonl` の
+//! `terminal` 行になる．`reproduce` は試行しか見ないので run 1 本で足りる．
+//! どこに何を置いたかは `edmondson_team::record` の冒頭にまとめてある．
 
 use std::fs;
 use std::path::Path;
 
 use clap::{Parser, Subcommand};
+use runvault::{Lineage, Run, RunOptions};
+use serde::Serialize;
 
 use edmondson_team::config::{
     parse_decision_mode, parse_network_kind, Config, LearningWeights, LlmSettings, NetworkKind,
     PsiParams, VoiceBeta,
 };
+use edmondson_team::llm::{build_live_client, VoiceClient};
+use edmondson_team::record::{
+    self, ConditionParameters, ReplicateGroupParameters, ReplicateParameters, DOMAIN, EXPERIMENT,
+    GROUP_SEED_POINTERS, HASH_EXCLUDE, REPLICATE_SEED_POINTERS, REPO_ID,
+};
 use edmondson_team::simulation::{
-    anchor_report_from_result, ensure_output_dir, run, save_individuals, save_llm_meta,
-    save_metrics, save_teams, SimulationResult,
+    anchor_report_from_result, run_with_client, save_individuals, AnchorReport, SimulationResult,
 };
 
-use socsim_core::derive_seed;
-use socsim_results::{refresh_latest_symlink, timestamp, write_csv, write_json};
+use socsim_llm::LlmClient;
 
 // --------------------------------------------------------------------------- //
 // CLI
@@ -40,9 +54,9 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Run a single configuration.
+    /// Run a single configuration; one child run per replicate.
     Run(RunArgs),
-    /// Sweep ψ-update parameters across seeds; aggregate into `sweep_summary.csv`.
+    /// Sweep ψ-update parameters across seeds; one child run per cell.
     Sweep(SweepArgs),
     /// Team-level cross-section against the design's §5 anchors.
     Reproduce(ReproduceArgs),
@@ -89,10 +103,10 @@ struct RunArgs {
     /// Maximum simulation step.
     #[arg(long, default_value_t = 24)]
     t_max: u64,
-    /// Number of independent runs (the run outputs reflect a *pooled* cross-section).
+    /// Number of independent replicates (one child run each).
     #[arg(long, default_value_t = 30)]
     runs: usize,
-    /// Random seed (governs the socsim core layer).
+    /// Base random seed (per-replicate seeds are derived from it).
     #[arg(long, default_value_t = 1999)]
     seed: u64,
     /// LLM generation temperature.
@@ -104,7 +118,7 @@ struct RunArgs {
     /// Prompt → response cache path (LLM mode only).
     #[arg(long, default_value = ".llm_cache/cache.json")]
     cache_path: String,
-    /// Output base directory.
+    /// runvault results root.
     #[arg(long, default_value = "results")]
     output_dir: String,
 }
@@ -146,7 +160,7 @@ struct SweepArgs {
     /// Base seed.
     #[arg(long, default_value_t = 1999)]
     seed: u64,
-    /// Output base directory.
+    /// runvault results root.
     #[arg(long, default_value = "results")]
     output_dir: String,
 }
@@ -168,34 +182,32 @@ struct ReproduceArgs {
     /// Base seed.
     #[arg(long, default_value_t = 1999)]
     seed: u64,
-    /// Runs (pooled into the cross-section).
+    /// Trials (pooled into the cross-section).
     #[arg(long, default_value_t = 30)]
     runs: usize,
-    /// Output base directory.
+    /// runvault results root.
     #[arg(long, default_value = "results")]
     output_dir: String,
 }
 
 // --------------------------------------------------------------------------- //
-// CSV rows
+// sweep parent parameters
 // --------------------------------------------------------------------------- //
 
-#[derive(serde::Serialize)]
-struct SweepRow {
-    decision_mode: String,
-    alpha: f64,
-    delta: f64,
+/// The sweep parent's own conditions: the grid definition itself.
+///
+/// 個別セルの条件は子 run が持つ．親はどの格子を掃いたかだけを宣言する．
+#[derive(Serialize)]
+struct SweepParameters {
+    decision_mode: &'static str,
+    n_teams: usize,
+    team_size: usize,
+    alpha_values: Vec<f64>,
+    delta_values: Vec<f64>,
     lambda: f64,
-    run: usize,
-    seed: u64,
-    icc_psi: f64,
-    beta_psi_l: f64,
-    r2_psi_l: f64,
-    r2_l_pi: f64,
-    mediation_ratio: f64,
-    beta_support_psi: f64,
-    efficacy_t: f64,
-    hypotheses_supported: u8,
+    runs: usize,
+    t_max: u64,
+    base_seed: u64,
 }
 
 // --------------------------------------------------------------------------- //
@@ -252,22 +264,119 @@ fn mean(v: &[f64]) -> f64 {
     }
 }
 
+/// LLM モードなら本番クライアントを組み立てる．rule モードでは `None`．
+///
+/// `Run::start` より前に組み立てるのは，`llm` ブロックに書く model / endpoint を
+/// クライアント自身から採るためである (名前を推測で書かない)．
+fn build_client(cfg: &Config) -> Option<VoiceClient> {
+    if !cfg.decision_mode.is_llm() {
+        return None;
+    }
+    Some(build_live_client(&cfg.llm).unwrap_or_else(|e| panic!("LLM client build failed: {e}")))
+}
+
+/// LLM キャッシュの置き場を用意する (LLM モードのみ)．
+fn ensure_cache_dir(cfg: &Config, cache_path: &str) {
+    if cfg.decision_mode.is_llm() {
+        if let Some(parent) = Path::new(cache_path).parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+    }
+}
+
+/// 試行 1 本を回す (`sweep` / `reproduce`)．run ディレクトリは作らない．
+fn run_trial(cfg: &Config) -> SimulationResult {
+    let client = build_client(cfg);
+    run_with_client(cfg, client).unwrap_or_else(|e| panic!("trial run failed: {e}"))
+}
+
 // --------------------------------------------------------------------------- //
 // run
 // --------------------------------------------------------------------------- //
 
-fn cmd_run(args: RunArgs) {
-    let timestamp = timestamp();
-    let output_dir = format!("{}/{}", args.output_dir, timestamp);
-    ensure_output_dir(&output_dir);
+/// 反復 1 本を子 run として回し，記録する．
+fn run_replicate(
+    results_root: &str,
+    cfg: &Config,
+    seed: u64,
+    replicate_index: usize,
+    lineage: &Lineage,
+) -> SimulationResult {
+    let client = build_client(cfg);
+    let llm = client
+        .as_ref()
+        .map(|c| record::llm_block(c.inner().model(), c.inner().endpoint(), cfg.llm.temperature));
 
-    let mut base_cfg = cfg_from_run_args(&args);
-    base_cfg.output_dir = output_dir.clone();
-    if base_cfg.decision_mode.is_llm() {
-        if let Some(parent) = Path::new(&args.cache_path).parent() {
-            let _ = fs::create_dir_all(parent);
-        }
+    let parameters = ReplicateParameters {
+        condition: ConditionParameters::from_config(cfg),
+        seed,
+    };
+
+    let mut options = RunOptions::new(EXPERIMENT, "run-replicate")
+        .repo_id(REPO_ID)
+        .domain(DOMAIN)
+        .results_root(results_root)
+        .parameters(&parameters)
+        .expect("runvault: parameters の組み立てに失敗")
+        .hash_exclude(HASH_EXCLUDE)
+        .seed_pointers(REPLICATE_SEED_POINTERS)
+        .master_seed(seed)
+        .replicate_index(replicate_index as u64)
+        .lineage(lineage.clone())
+        .replication(record::replication());
+    if let Some(llm) = llm {
+        options = options.llm(llm);
     }
+
+    let mut child = Run::start(options).expect("runvault: 子 run の開始に失敗");
+
+    let result =
+        run_with_client(cfg, client).unwrap_or_else(|e| panic!("replicate run failed: {e}"));
+
+    record::log_replicate(&mut child, cfg, &result);
+    if cfg.decision_mode.is_llm() {
+        record::log_llm_usage(&mut child, &result);
+    }
+    save_individuals(
+        &result.individual_rows,
+        &child.dir().join("artifacts").to_string_lossy(),
+    );
+    child.finish().expect("runvault: 子 run の完了に失敗");
+
+    result
+}
+
+fn cmd_run(args: RunArgs) {
+    let base_cfg = cfg_from_run_args(&args);
+    ensure_cache_dir(&base_cfg, &args.cache_path);
+    let runs = base_cfg.runs.max(1);
+
+    // 親 run: 条件と反復リストを宣言するだけで，シミュレーションは回さない．
+    // 反復ごとの派生シードで駆動されるので単一の master_seed は名乗らない
+    // (base seed は /base_seed と seed_pointers 経由で execution_hash に残る)．
+    let parent = Run::start(
+        RunOptions::new(EXPERIMENT, "run")
+            .repo_id(REPO_ID)
+            .domain(DOMAIN)
+            .results_root(&args.output_dir)
+            .parameters(&ReplicateGroupParameters {
+                condition: ConditionParameters::from_config(&base_cfg),
+                runs,
+                base_seed: base_cfg.seed,
+            })
+            .expect("runvault: parameters の組み立てに失敗")
+            .hash_exclude(HASH_EXCLUDE)
+            .seed_pointers(GROUP_SEED_POINTERS)
+            .sweep_parent()
+            .replication(record::replication()),
+    )
+    .expect("runvault: 親 run の開始に失敗");
+
+    let lineage = Lineage {
+        sweep_id: parent.sweep_id().map(str::to_string),
+        parent_run_uid: Some(parent.run_uid().to_string()),
+        ..Default::default()
+    };
 
     println!("=== Edmondson (1999) — Psychological Safety & Team Learning ===");
     println!(
@@ -289,39 +398,27 @@ fn cmd_run(args: RunArgs) {
         base_cfg.psi.delta,
         base_cfg.sigma_obs,
         base_cfg.t_max,
-        base_cfg.runs,
+        runs,
         base_cfg.seed,
     );
-    println!("output: {output_dir}");
+    println!("output: {}", parent.dir().display());
     println!("----------------------------------------------------------------------");
 
-    {
-        let path = format!("{output_dir}/config.json");
-        write_json(&base_cfg.to_run_config_json(), &path).expect("failed to write config.json");
-    }
-
-    // Run all repeats; keep the last for the long-format CSVs, and pool the
-    // final-tick team cross-sections across runs for the printed anchors.
-    let mut last_result: Option<SimulationResult> = None;
-    let runs = base_cfg.runs.max(1);
     let (mut pooled_icc, mut pooled_beta_psi_l, mut pooled_r2, mut pooled_med) =
         (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-    let mut cross_section: Vec<edmondson_team::simulation::CrossSectionRow> = Vec::new();
+    let mut last: Option<SimulationResult> = None;
     for run_idx in 0..runs {
-        let seed = derive_seed(base_cfg.seed, &[run_idx as u64]);
+        let seed = record::replicate_seed(base_cfg.seed, run_idx);
         let cfg = Config {
             seed,
             ..base_cfg.clone()
         };
-        let result = run(&cfg).unwrap_or_else(|e| panic!("run failed: {e}"));
+        let result = run_replicate(&args.output_dir, &cfg, seed, run_idx, &lineage);
         let rep = anchor_report_from_result(&result);
         pooled_icc.push(rep.icc_psi);
         pooled_beta_psi_l.push(rep.beta_psi_l);
         pooled_r2.push(rep.r2_psi_l);
         pooled_med.push(rep.mediation_ratio);
-        cross_section.extend(edmondson_team::simulation::cross_section_rows(
-            &result, run_idx,
-        ));
         if run_idx + 1 == runs || runs <= 5 {
             println!(
                 "[{}/{}] seed={} icc_ψ={:.3} ψ→L B={:.3} R²={:.3} med_ratio={:.3}",
@@ -334,40 +431,37 @@ fn cmd_run(args: RunArgs) {
                 rep.mediation_ratio,
             );
         }
-        last_result = Some(result);
+        last = Some(result);
     }
 
-    let result = last_result.expect("at least one run");
-    save_teams(&result, &output_dir);
-    save_individuals(&result, &output_dir);
-    save_metrics(&result, &output_dir);
-    edmondson_team::simulation::save_cross_section(&cross_section, &output_dir);
-    save_llm_meta(&result, &base_cfg, &output_dir);
-
-    let _ = refresh_latest_symlink(&args.output_dir, &timestamp);
+    let dir = parent.finish().expect("runvault: 親 run の完了に失敗");
 
     println!("----------------------------------------------------------------------");
     println!(
-        "pooled over {} runs: icc_ψ={:.3} ψ→L B={:.3} R²={:.3} med_ratio={:.3}",
+        "pooled over {} replicates: icc_ψ={:.3} ψ→L B={:.3} R²={:.3} med_ratio={:.3}",
         runs,
         mean(&pooled_icc),
         mean(&pooled_beta_psi_l),
         mean(&pooled_r2),
         mean(&pooled_med),
     );
+    if let Some(result) = &last {
+        if base_cfg.decision_mode.is_llm() {
+            println!(
+                "LLM calls (最後の反復): {} | cache-hit: {} ({:.1}%) | model: {}",
+                result.metadata.total(),
+                result.metadata.cache_hits(),
+                result.metadata.cache_hit_rate() * 100.0,
+                result.llm_model,
+            );
+        }
+    }
+    println!("親 run   → {}", dir.display());
     println!(
-        "LLM calls: {} | cache-hit: {} ({:.1}%) | model: {}",
-        result.metadata.total(),
-        result.metadata.cache_hits(),
-        result.metadata.cache_hit_rate() * 100.0,
-        result.llm_model,
+        "反復 {runs} 本 → 子 run (subcommand=run-replicate)．metrics.csv がステップごとの時系列，\
+         events.jsonl の observation がチームのパネル，terminal がチームの断面，\
+         artifacts/individuals.csv が個人パネル．"
     );
-    println!("teams       → {output_dir}/teams.csv");
-    println!("individuals → {output_dir}/individuals.csv");
-    println!("metrics     → {output_dir}/metrics.csv");
-    println!("cross_section→ {output_dir}/team_cross_section.csv");
-    println!("llm_meta    → {output_dir}/llm_meta.json");
-    println!("config      → {output_dir}/config.json");
 }
 
 // --------------------------------------------------------------------------- //
@@ -376,15 +470,41 @@ fn cmd_run(args: RunArgs) {
 
 fn cmd_sweep(args: SweepArgs) {
     let mode = parse_decision_mode(&args.decision_mode).unwrap_or_else(|e| panic!("{e}"));
-    let timestamp = timestamp();
-    let dir_name = format!("{timestamp}_sweep");
-    let sweep_dir = format!("{}/{}", args.output_dir, dir_name);
-    fs::create_dir_all(&sweep_dir).expect("failed to create sweep dir");
 
     let alphas = frange(args.alpha_min, args.alpha_max, args.alpha_step);
     let deltas = frange(args.delta_min, args.delta_max, args.delta_step);
     let n_cells = alphas.len() * deltas.len();
     let n_total = n_cells * args.runs;
+
+    // 親 run: グリッド定義そのものを parameters に持つ．個別セルの指標は書かない．
+    let parent = Run::start(
+        RunOptions::new(EXPERIMENT, "sweep")
+            .repo_id(REPO_ID)
+            .domain(DOMAIN)
+            .results_root(&args.output_dir)
+            .parameters(&SweepParameters {
+                decision_mode: mode.label(),
+                n_teams: args.n_teams,
+                team_size: args.team_size,
+                alpha_values: alphas.clone(),
+                delta_values: deltas.clone(),
+                lambda: args.lambda,
+                runs: args.runs,
+                t_max: args.t_max,
+                base_seed: args.seed,
+            })
+            .expect("runvault: sweep の parameters の組み立てに失敗")
+            .seed_pointers(GROUP_SEED_POINTERS)
+            .sweep_parent()
+            .replication(record::replication()),
+    )
+    .expect("runvault: sweep 親 run の開始に失敗");
+
+    let lineage = Lineage {
+        sweep_id: parent.sweep_id().map(str::to_string),
+        parent_run_uid: Some(parent.run_uid().to_string()),
+        ..Default::default()
+    };
 
     println!("=== edmondson-sweep ===");
     println!(
@@ -396,97 +516,99 @@ fn cmd_sweep(args: SweepArgs) {
         args.runs,
         n_total,
     );
-    println!("output: {sweep_dir}");
+    println!("base seed: {}", args.seed);
+    println!("output: {}", parent.dir().display());
     println!("------------------------------------------------------------");
 
-    {
-        let config_json = serde_json::json!({
-            "command": "sweep",
-            "decision_mode": mode.label(),
-            "n_teams": args.n_teams,
-            "team_size": args.team_size,
-            "alpha_values": alphas,
-            "delta_values": deltas,
-            "lambda": args.lambda,
-            "runs": args.runs,
-            "t_max": args.t_max,
-            "seed": args.seed,
-        });
-        let path = format!("{sweep_dir}/sweep_config.json");
-        write_json(&config_json, &path).expect("failed to write sweep_config.json");
-    }
-
-    let mut rows: Vec<SweepRow> = Vec::with_capacity(n_total);
     let mut idx = 0usize;
     for &alpha in &alphas {
         for &delta in &deltas {
-            for run_idx in 0..args.runs {
-                idx += 1;
-                let seed = derive_seed(
-                    args.seed,
-                    &[
-                        (alpha * 1000.0) as u64,
-                        (delta * 1000.0) as u64,
-                        run_idx as u64,
-                    ],
-                );
-                let cfg = Config {
-                    n_teams: args.n_teams,
-                    team_size: args.team_size,
-                    decision_mode: mode,
-                    psi: PsiParams {
-                        alpha,
-                        delta,
-                        lambda: args.lambda,
-                        ..PsiParams::default()
-                    },
-                    t_max: args.t_max,
-                    runs: 1,
-                    seed,
-                    ..Config::default()
-                };
-                let result = run(&cfg).unwrap_or_else(|e| panic!("sweep run failed: {e}"));
-                let rep = anchor_report_from_result(&result);
-                rows.push(SweepRow {
-                    decision_mode: mode.label().to_string(),
+            let cell_cfg = Config {
+                n_teams: args.n_teams,
+                team_size: args.team_size,
+                decision_mode: mode,
+                psi: PsiParams {
                     alpha,
                     delta,
                     lambda: args.lambda,
-                    run: run_idx,
+                    ..PsiParams::default()
+                },
+                t_max: args.t_max,
+                runs: args.runs,
+                seed: args.seed,
+                ..Config::default()
+            };
+
+            // 子は «そのセルの試行群» そのもの．base seed とセル座標からすべての
+            // 試行シードが決まるので master_seed は base seed であり，同一セルの
+            // 繰り返しは無いので replicate_index は 0．
+            let mut child = Run::start(
+                RunOptions::new(EXPERIMENT, "sweep-point")
+                    .repo_id(REPO_ID)
+                    .domain(DOMAIN)
+                    .results_root(&args.output_dir)
+                    .parameters(&ReplicateGroupParameters {
+                        condition: ConditionParameters::from_config(&cell_cfg),
+                        runs: args.runs,
+                        base_seed: args.seed,
+                    })
+                    .expect("runvault: 子 run の parameters の組み立てに失敗")
+                    .hash_exclude(HASH_EXCLUDE)
+                    .seed_pointers(GROUP_SEED_POINTERS)
+                    .master_seed(args.seed)
+                    .replicate_index(0)
+                    .lineage(lineage.clone())
+                    .replication(record::replication()),
+            )
+            .expect("runvault: sweep 子 run の開始に失敗");
+
+            let mut reps: Vec<AnchorReport> = Vec::with_capacity(args.runs);
+            for run_idx in 0..args.runs {
+                idx += 1;
+                let seed = record::trial_seed(args.seed, alpha, delta, run_idx);
+                let cfg = Config {
                     seed,
-                    icc_psi: rep.icc_psi,
-                    beta_psi_l: rep.beta_psi_l,
-                    r2_psi_l: rep.r2_psi_l,
-                    r2_l_pi: rep.r2_l_pi,
-                    mediation_ratio: rep.mediation_ratio,
-                    beta_support_psi: rep.beta_support_psi,
-                    efficacy_t: rep.efficacy_partial_t,
-                    hypotheses_supported: rep.hypotheses_supported,
-                });
+                    runs: 1,
+                    ..cell_cfg.clone()
+                };
+                let result = run_trial(&cfg);
+                let rep = anchor_report_from_result(&result);
+                record::log_trial(
+                    &mut child,
+                    run_idx,
+                    seed,
+                    result.final_round,
+                    args.t_max,
+                    &rep,
+                );
                 if idx.is_multiple_of(20) || idx == n_total {
                     println!(
                         "[{}/{}] α={:.2} δ={:.2} run={} icc_ψ={:.3} med={:.3}",
                         idx, n_total, alpha, delta, run_idx, rep.icc_psi, rep.mediation_ratio
                     );
                 }
+                reps.push(rep);
             }
+            record::log_cell_summary(&mut child, &reps);
+            child.finish().expect("runvault: sweep 子 run の完了に失敗");
         }
     }
 
-    let path = format!("{sweep_dir}/sweep_summary.csv");
-    write_csv(&rows, &path).expect("failed to write sweep_summary.csv");
-
-    let _ = refresh_latest_symlink(&args.output_dir, &dir_name);
+    let dir = parent
+        .finish()
+        .expect("runvault: sweep 親 run の完了に失敗");
     println!("------------------------------------------------------------");
     println!("sweep done.");
-    println!("summary → {sweep_dir}/sweep_summary.csv");
-    println!("config  → {sweep_dir}/sweep_config.json");
+    println!("親 run     → {}", dir.display());
+    println!("セル {n_cells} 個 → 子 run (subcommand=sweep-point)．試行 1 本が events.jsonl の terminal 行 1 本．");
 }
 
 // --------------------------------------------------------------------------- //
 // reproduce
 // --------------------------------------------------------------------------- //
 
+/// 帯は原著の数ではなくこちらが決めた許容幅なので，`reference.csv` にも指標にも
+/// 入れずコンソールに残す．
 fn band(name: &str, value: f64, lo: f64, hi: f64) -> String {
     let ok = value >= lo && value <= hi;
     format!(
@@ -497,49 +619,73 @@ fn band(name: &str, value: f64, lo: f64, hi: f64) -> String {
 
 fn cmd_reproduce(args: ReproduceArgs) {
     let mode = parse_decision_mode(&args.decision_mode).unwrap_or_else(|e| panic!("{e}"));
+    let runs = args.runs.max(1);
+
+    let base_cfg = Config {
+        n_teams: args.n_teams,
+        team_size: args.team_size,
+        decision_mode: mode,
+        t_max: args.t_max,
+        runs,
+        seed: args.seed,
+        output_dir: args.output_dir.clone(),
+        ..Config::default()
+    };
+
+    // 試行は自分の時系列を残さない (各試行の断面統計しか見ない) ので，子 run には
+    // 割らず run 1 本の terminal 行 1 本ずつにする．
+    let mut run = Run::start(
+        RunOptions::new(EXPERIMENT, "reproduce")
+            .repo_id(REPO_ID)
+            .domain(DOMAIN)
+            .results_root(&args.output_dir)
+            .parameters(&ReplicateGroupParameters {
+                condition: ConditionParameters::from_config(&base_cfg),
+                runs,
+                base_seed: args.seed,
+            })
+            .expect("runvault: reproduce の parameters の組み立てに失敗")
+            .hash_exclude(HASH_EXCLUDE)
+            .seed_pointers(GROUP_SEED_POINTERS)
+            .master_seed(args.seed)
+            .replication(record::replication()),
+    )
+    .expect("runvault: reproduce の run の開始に失敗");
+
     println!("=== edmondson-reproduce ({} mode) ===", mode.label());
+    println!("output: {}", run.dir().display());
 
     // Each independent trial yields one set of anchor statistics on its own
     // team cross-section (n_teams ≈ the paper's 51); we report the mean across
     // trials, matching the §6 "30 trials, average ± 95% CI" plan. Pooling all
     // teams into one giant regression would inflate the statistical power far
     // beyond the paper's design (and make every effect spuriously significant).
-    let runs = args.runs.max(1);
     let mut reps = Vec::with_capacity(runs);
     for run_idx in 0..runs {
-        let seed = derive_seed(args.seed, &[run_idx as u64]);
+        let seed = record::replicate_seed(args.seed, run_idx);
         let cfg = Config {
-            n_teams: args.n_teams,
-            team_size: args.team_size,
-            decision_mode: mode,
-            t_max: args.t_max,
-            runs: 1,
             seed,
-            ..Config::default()
+            runs: 1,
+            ..base_cfg.clone()
         };
-        let result = run(&cfg).unwrap_or_else(|e| panic!("reproduce run failed: {e}"));
-        reps.push(edmondson_team::simulation::anchor_report_from_result(
-            &result,
-        ));
+        let result = run_trial(&cfg);
+        let rep = anchor_report_from_result(&result);
+        record::log_trial(
+            &mut run,
+            run_idx,
+            seed,
+            result.final_round,
+            args.t_max,
+            &rep,
+        );
+        reps.push(rep);
     }
-    let mean_f = |f: &dyn Fn(&edmondson_team::simulation::AnchorReport) -> f64| -> f64 {
-        reps.iter().map(f).sum::<f64>() / reps.len() as f64
-    };
-    let rep = edmondson_team::simulation::AnchorReport {
-        icc_psi: mean_f(&|r| r.icc_psi),
-        icc_learning: mean_f(&|r| r.icc_learning),
-        beta_psi_l: mean_f(&|r| r.beta_psi_l),
-        r2_psi_l: mean_f(&|r| r.r2_psi_l),
-        r2_l_pi: mean_f(&|r| r.r2_l_pi),
-        beta_l_pi: mean_f(&|r| r.beta_l_pi),
-        beta_psi_residual: mean_f(&|r| r.beta_psi_residual),
-        beta_psi_residual_p: mean_f(&|r| r.beta_psi_residual_p),
-        mediation_ratio: mean_f(&|r| r.mediation_ratio),
-        beta_support_psi: mean_f(&|r| r.beta_support_psi),
-        beta_support_psi_p: mean_f(&|r| r.beta_support_psi_p),
-        efficacy_partial_t: mean_f(&|r| r.efficacy_partial_t),
-        hypotheses_supported: (mean_f(&|r| r.hypotheses_supported as f64)).round() as u8,
-    };
+    record::log_reproduce_summary(&mut run, &reps);
+    record::log_paper_reference(&mut run);
+    let rep = record::mean_report(&reps);
+    let dir = run
+        .finish()
+        .expect("runvault: reproduce の run の完了に失敗");
 
     println!(
         "per-trial team cross-section averaged over {} runs ({} teams/trial):",
@@ -592,9 +738,12 @@ fn cmd_reproduce(args: ReproduceArgs) {
         }
     );
     println!();
+    println!("run → {}", dir.display());
+    println!("試行 {runs} 本が events.jsonl の terminal 行．原著の報告値は reference.csv．");
+    println!();
     println!("For the full Table 4-8-style Baron & Kenny report + bootstrap mediation");
     println!("95% BC CI + the efficacy discriminant, run the Python tool:");
-    println!("  uv run edmondson-tools reproduce --results-dir results/latest");
+    println!("  uv run edmondson-tools reproduce");
 }
 
 // --------------------------------------------------------------------------- //

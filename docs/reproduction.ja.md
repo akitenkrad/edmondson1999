@@ -6,7 +6,7 @@
 
 ## 安定なチームレベル測度
 
-チーム学習 `L_k` とパフォーマンス `Π_k` は小規模 (n_k≈8) チームでは単一 tick のノイジーな率である．再現では各チームの **実行後半の時間平均** を安定な survey 相当の測度として用いる — これがまさに `team_cross_section.csv` に書かれる横断データである．ICC(ψ) は最終 tick の個人別 ψ で計算し，ICC(L) は各個人の時間平均発言率をチームでグループ化して計算する．
+チーム学習 `L_k` とパフォーマンス `Π_k` は小規模 (n_k≈8) チームでは単一 tick のノイジーな率である．再現では各チームの **実行後半の時間平均** を安定な survey 相当の測度として用いる — これがまさに反復ごとに `terminal` イベント (1 チーム 1 行) として書かれる横断データである．ICC(ψ) は最終 tick の個人別 ψ で計算し，ICC(L) は各個人の時間平均発言率をチームでグループ化して計算する．
 
 ## 試行ごとの平均
 
@@ -30,7 +30,7 @@
 ## Rust と Python
 
 - `cargo run --release -- reproduce` は `metrics.rs` のローカル OLS / ICC / Baron & Kenny 実装でアンカーを表示する．
-- `uv run edmondson-tools reproduce` は `team_cross_section.csv` を読み，**statsmodels** で三段階媒介分析を試行ごとに再計算し (正確 t の p 値)，間接効果 a·b の **ブートストラップ** (95% バイアス補正パーセンタイル CI) を加え，効力感弁別 `L ~ ψ + efficacy` を実行し，`table4_report.csv` + `mediation_bootstrap.csv` を書く．2 経路はアンカー判定で一致する．
+- `uv run edmondson-tools reproduce` は反復の子 run の `terminal` 行を読み (後半平均を計算し直さず Rust が出した数をそのまま読む — 同じ集約を 2 箇所に置かない)，**statsmodels** で三段階媒介分析を試行ごとに再計算し (正確 t の p 値)，間接効果 a·b の **ブートストラップ** (95% バイアス補正パーセンタイル CI) を加え，効力感弁別 `L ~ ψ + efficacy` を実行し，`table4_report.csv` + `mediation_bootstrap.csv` を書く．2 経路はアンカー判定で一致する．
 
 ## H5 / H8 (効力感弁別)
 

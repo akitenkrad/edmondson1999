@@ -30,7 +30,7 @@
 - **決定論的な socsim コア** — 個人初期化・チーム内ネットワーク生成・スケジューリング・LLM を使わない 5 つのメカニズム．シードを固定すれば `rule` モードは bit 単位で再現する．
 - **非決定的な LLM レイヤ** — `voice_decision` メカニズムのみ．`socsim-llm` の `CachingClient` (`hash(prompt+model)` → 応答キャッシュ)・`temperature=0`・`(agent_id, t)` 由来の固定シードで擬似決定論化する．再現性の担保はモデルではなくキャッシュが行う．
 
-各実行は `llm_meta.json` に decision-mode / model / endpoint / temperature / seed / キャッシュヒット率を記録する．
+LLM モードの run は model / endpoint / temperature を `run.json` の `llm` ブロックに，呼び出し数とキャッシュヒットを run スコープ指標 `llm_calls` / `llm_cache_hits` / `llm_cache_hit_rate` に記録する．`rule` モードの run は LLM に一度も到達しないので，モデルを名乗らない．
 
 ## インストールとクイックスタート
 
@@ -66,7 +66,7 @@ cargo run --release -- run --decision-mode llm \
 uv sync
 uv run edmondson-tools visualize                 # ψ/L/Π 時系列 + 媒介散布図 + ICC 推移
 uv run edmondson-tools visualize-sweep           # α × δ の媒介 / R² / ICC ヒートマップ
-uv run edmondson-tools show-experiment-settings  # config / sweep_config / llm_meta
+uv run edmondson-tools show-experiment-settings  # 実験条件 + run の同一性 + run スコープ指標
 uv run edmondson-tools reproduce                 # Table 4-8 風 Baron & Kenny レポート + ブートストラップ CI
 ```
 
@@ -75,7 +75,7 @@ uv run edmondson-tools reproduce                 # Table 4-8 風 Baron & Kenny �
 ```
 edmondson1999/
 ├── simulation/                       # Rust socsim ABM
-│   ├── Cargo.toml                    # socsim-{core,engine,net,metrics,llm,results} git 依存
+│   ├── Cargo.toml                    # socsim-{core,engine,net,metrics,llm} + runvault git 依存
 │   ├── src/
 │   │   ├── lib.rs / main.rs          # CLI: run / sweep / reproduce
 │   │   ├── config.rs                 # Config / DecisionMode / PsiParams / VoiceBeta / NetworkKind
@@ -83,23 +83,30 @@ edmondson1999/
 │   │   ├── mechanisms.rs             # 6 メカニズム × 6 フェーズ; rule と LLM の判断は排他
 │   │   ├── prompts.rs                # 発言判断プロンプト + 判断 JSON パーサ
 │   │   ├── llm.rs                    # socsim-llm 共有ハーネスの re-export shim
-│   │   ├── simulation.rs             # init_world + run_with_client + CSV/JSON ライタ + アンカー
+│   │   ├── simulation.rs             # init_world + run_with_client + アンカー
+│   │   ├── record.rs                 # runvault: 何をどこへ置いたか (最初に読む)
 │   │   └── metrics.rs                # ICC + OLS + Baron & Kenny 三段階法 (論文固有)
 │   └── tests/integration_test.rs     # rule bit 決定論 + scripted-LLM スモーク
 ├── tools/                            # Python edmondson-tools
-│   └── src/edmondson_tools/{cli,visualize,visualize_sweep,show_experiment_settings,
-│                            reproduce_paper}.py
+│   └── src/edmondson_tools/{cli,runs,visualize,visualize_sweep,
+│                            show_experiment_settings,reproduce_paper}.py
 ├── docs/                             # bilingual: architecture, cli, usecases, visualization, reproduction
-└── results/                          # 実行時生成 (gitignore)
-    ├── latest -> {YYYYMMDD_HHMMSS}/
-    └── {YYYYMMDD_HHMMSS}/
-        ├── config.json | sweep_config.json
-        ├── teams.csv                # t, team_id, psi, learning, performance, efficacy, support, coaching
-        ├── individuals.csv          # t, team_id, agent_id, psi_i, voice, fear, retaliated
-        ├── metrics.csv              # t, icc_psi, icc_learning, mediation_ratio, beta_psi_l, beta_l_pi
-        ├── team_cross_section.csv   # チーム別の後半平均をプール (1 行 = 1 チーム × 1 試行)
-        ├── sweep_summary.csv        # sweep: 1 行 = (α, δ, run)
-        └── llm_meta.json            # LLM 来歴 + キャッシュヒット + 決定論ノート
+└── results/                          # 実行時生成 (gitignore) — runvault の run ディレクトリ
+    └── edmondson-psafety/            # run 1 本 1 ディレクトリ．命名は runvault が決める
+        ├── run_.../                  # `run` の親: 条件を宣言する config.json だけ
+        ├── run-replicate_.../        # 反復 1 本ずつ
+        │   ├── run.json              # run_uid / config_hash / master_seed / replicate_index / llm
+        │   ├── config.json           # 実験条件 (`parameters`)
+        │   ├── metrics.csv           # long 形式: run_uid, step, step_unit, scope, name, value
+        │   ├── events.jsonl          # observation = チームのパネル，terminal = チームの断面
+        │   ├── artifacts/individuals.csv  # t, team_id, agent_id, psi_i, voice, fear, retaliated
+        │   ├── manifest.csv / status.json
+        │   └── lock/                 # Cargo.lock / uv.lock のスナップショット
+        ├── sweep_.../                # `sweep` の親: 格子の定義
+        ├── sweep-point_.../          # (α, δ) セル 1 つずつ．terminal 1 行 = 試行 1 本
+        ├── reproduce_.../            # terminal 1 行 = 試行 1 本．reference.csv が原著の報告値
+        └── figures/<run_slug>/       # PNG / table4_report.csv — run が終わったあとに作るので
+                                      # run ディレクトリ (と manifest) の外に置く
 ```
 
 ## ドキュメント

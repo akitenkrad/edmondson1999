@@ -20,7 +20,7 @@ use socsim_llm::MetadataCollector;
 use socsim_net::SocialNetwork;
 
 use crate::config::{Config, DecisionMode, NetworkKind};
-use crate::llm::{build_live_client, VoiceClient};
+use crate::llm::VoiceClient;
 use crate::mechanisms::{
     gauss_clamped, ContextSupportUpdate, LearningBehaviorAggregate, OrgPerformance, PsafetyUpdate,
     SharedClient, SharedMetadata, TeamEfficacyUpdate, VoiceDecisionLlm, VoiceDecisionRule,
@@ -249,17 +249,10 @@ fn build_network(cfg: &Config, members: &[AgentId], rng: &mut SimRng) -> SocialN
 // Run driver
 // --------------------------------------------------------------------------- //
 
-/// Build mechanisms + run one configuration. For LLM mode, build the production
-/// client from the environment.
-pub fn run(cfg: &Config) -> std::result::Result<SimulationResult, String> {
-    if cfg.decision_mode.is_llm() {
-        let client =
-            build_live_client(&cfg.llm).map_err(|e| format!("LLM client build failed: {e}"))?;
-        run_with_client(cfg, Some(client))
-    } else {
-        run_with_client(cfg, None)
-    }
-}
+// クライアントを内側で組む入口は置かない．`run.json` の `llm` ブロックに書く
+// model / endpoint を知っているのはクライアントを組んだ側だけなので，組み立ては
+// `Run::start` より前 (呼び出し側) で行う．ここに `run(cfg)` を残すと `llm`
+// ブロックの埋まらない LLM run が作れてしまう．入口は `run_with_client` 1 つである．
 
 /// Run with an optional pre-built [`VoiceClient`] — production via
 /// [`build_live_client`], tests via [`crate::llm::wrap_client`] over a
@@ -587,113 +580,53 @@ pub fn anchor_report_from_result(result: &SimulationResult) -> AnchorReport {
 // Output writers
 // --------------------------------------------------------------------------- //
 
-/// Create the output directory.
-pub fn ensure_output_dir(output_dir: &str) {
-    socsim_results::ensure_dir(output_dir).expect("failed to create output directory");
-}
-
-/// Write `teams.csv` (one row per (step, team)).
-pub fn save_teams(result: &SimulationResult, output_dir: &str) {
-    let path = format!("{output_dir}/teams.csv");
-    socsim_results::write_csv(&result.team_rows, &path).expect("failed to write teams.csv");
-}
-
-/// Write `individuals.csv` (one row per (step, individual)).
-pub fn save_individuals(result: &SimulationResult, output_dir: &str) {
-    let path = format!("{output_dir}/individuals.csv");
-    socsim_results::write_csv(&result.individual_rows, &path)
-        .expect("failed to write individuals.csv");
-}
-
-/// One pooled team-cross-section observation (time-averaged over a run's second
-/// half). Pooling these across the `runs` repeats gives the Python `reproduce`
-/// tool the same multi-run cross-section the Rust `reproduce` summarises.
+/// One team's cross-section observation: the team-level constructs time-averaged
+/// over the run's second half.
+///
+/// 旧 `team_cross_section.csv` の 1 行から `run` 列 (反復の番号 → 子 run の
+/// `replicate_index`) と `icc_psi` / `icc_learning` 列 (run 内で一定 → run スコープ
+/// の指標) を除いたもの．残る `team_id` がチームの `unit_id` になる．
 #[derive(Debug, Clone, Serialize)]
 pub struct CrossSectionRow {
-    pub run: usize,
     pub team_id: u32,
     pub psi: f64,
     pub learning: f64,
     pub performance: f64,
     pub support: f64,
     pub efficacy: f64,
-    /// Run-level ICC(ψ) (constant within a run; lets the Python tool average it).
-    pub icc_psi: f64,
-    /// Run-level ICC(L) from time-averaged voice rates (constant within a run).
-    pub icc_learning: f64,
 }
 
-/// Build the per-team cross-section rows for run index `run_idx`.
-pub fn cross_section_rows(result: &SimulationResult, run_idx: usize) -> Vec<CrossSectionRow> {
-    let avg = result.team_averages();
-    let icc_p = icc_psi(&result.world);
-    let icc_l = result.icc_learning;
-    let mut rows = Vec::with_capacity(avg.psi.len());
-    for i in 0..avg.psi.len() {
-        rows.push(CrossSectionRow {
-            run: run_idx,
-            team_id: i as u32,
-            psi: avg.psi[i],
-            learning: avg.learning[i],
-            performance: avg.performance[i],
-            support: avg.support[i],
-            efficacy: avg.efficacy[i],
-            icc_psi: icc_p,
-            icc_learning: icc_l,
-        });
+impl SimulationResult {
+    /// Per-team cross-section rows for this run (second-half time averages).
+    pub fn cross_section_rows(&self) -> Vec<CrossSectionRow> {
+        let avg = self.team_averages();
+        (0..avg.psi.len())
+            .map(|i| CrossSectionRow {
+                team_id: i as u32,
+                psi: avg.psi[i],
+                learning: avg.learning[i],
+                performance: avg.performance[i],
+                support: avg.support[i],
+                efficacy: avg.efficacy[i],
+            })
+            .collect()
     }
-    rows
 }
 
-/// Write the pooled `team_cross_section.csv`.
-pub fn save_cross_section(rows: &[CrossSectionRow], output_dir: &str) {
-    let path = format!("{output_dir}/team_cross_section.csv");
-    socsim_results::write_csv(rows, &path).expect("failed to write team_cross_section.csv");
-}
-
-/// Write `metrics.csv` (one row per step).
-pub fn save_metrics(result: &SimulationResult, output_dir: &str) {
-    let path = format!("{output_dir}/metrics.csv");
-    socsim_results::write_csv(&result.metrics_rows, &path).expect("failed to write metrics.csv");
-}
-
-/// `llm_meta.json` (LLM model / endpoint / temperature / seed / cache stats).
-#[derive(Serialize)]
-pub struct LlmMetaJson {
-    pub decision_mode: String,
-    pub llm_model: String,
-    pub llm_endpoint: String,
-    pub llm_temperature: f32,
-    pub llm_seed: u64,
-    pub total_calls: usize,
-    pub cache_hits: usize,
-    pub cache_hit_rate: f64,
-    pub final_round: u64,
-    pub convergence_step: Option<u64>,
-    pub determinism_note: &'static str,
-}
-
-/// Save `llm_meta.json`.
-pub fn save_llm_meta(result: &SimulationResult, cfg: &Config, output_dir: &str) {
-    let meta = LlmMetaJson {
-        decision_mode: cfg.decision_mode.label().to_string(),
-        llm_model: result.llm_model.clone(),
-        llm_endpoint: result.llm_endpoint.clone(),
-        llm_temperature: cfg.llm.temperature,
-        llm_seed: cfg.llm.seed,
-        total_calls: result.metadata.total(),
-        cache_hits: result.metadata.cache_hits(),
-        cache_hit_rate: result.metadata.cache_hit_rate(),
-        final_round: result.final_round,
-        convergence_step: result.convergence_step,
-        determinism_note: "LLM output is outside socsim bit-reproducibility; the prompt->response \
-                           cache (temperature=0 + (agent_id, t)-derived seed) is the reproducibility \
-                           mechanism. The socsim core (init, networks, scheduling, the rule decision \
-                           mode, and the 5 non-LLM mechanisms) is deterministic given the seed. \
-                           rule mode makes zero LLM calls.",
-    };
-    let path = format!("{output_dir}/llm_meta.json");
-    socsim_results::write_json(&meta, &path).expect("failed to write llm_meta.json");
+/// Write the individual panel to `<dir>/individuals.csv` (one row per (step,
+/// individual)).
+///
+/// 唯一残った自前の書き出し．重い表なので run ディレクトリの `artifacts/` に
+/// 表のまま置く (`record` モジュールの冒頭を参照)．`manifest.csv` は
+/// `Run::finish` が確定させるので，run が終わる前に書かなければならない．
+pub fn save_individuals(rows: &[IndividualRow], dir: &str) {
+    std::fs::create_dir_all(dir).expect("failed to create the artifacts directory");
+    let path = format!("{dir}/individuals.csv");
+    let mut w = csv::Writer::from_path(&path).expect("failed to open individuals.csv");
+    for row in rows {
+        w.serialize(row).expect("failed to write individuals.csv");
+    }
+    w.flush().expect("failed to flush individuals.csv");
 }
 
 #[cfg(test)]

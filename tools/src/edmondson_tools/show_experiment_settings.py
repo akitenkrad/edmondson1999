@@ -1,8 +1,17 @@
 #!/usr/bin/env python3
-"""show_experiment_settings.py — print a results directory's settings.
+"""show_experiment_settings.py — print a run's conditions and what it recorded.
 
-Reads `config.json` (run) or `sweep_config.json` (sweep) plus `llm_meta.json`
-and renders them as a readable table, or as JSON with `--json`.
+runvault の run ディレクトリは `config.json` (封筒 + `parameters`) に条件を，
+`run.json` に同一性 (`run_uid` / `config_hash` / `master_seed` / `llm` ブロック) を，
+`metrics.csv` の step を持たない行に run 全体を 1 つの値で表す指標を持つ．旧
+`config.json` / `sweep_config.json` / `llm_meta.json` の中身はこの 3 つに分かれた．
+
+legacy な `results/<timestamp>/` はそのまま渡せば従来どおり読める．
+
+Usage:
+    uv run edmondson-tools show-experiment-settings
+    uv run edmondson-tools show-experiment-settings --subcommand sweep
+    uv run edmondson-tools show-experiment-settings --results-dir results/20260530_000000
 """
 
 from __future__ import annotations
@@ -12,6 +21,8 @@ import json
 import sys
 from pathlib import Path
 
+from edmondson_tools import runs
+
 
 def _load(path: Path) -> dict | None:
     if path.exists():
@@ -20,86 +31,125 @@ def _load(path: Path) -> dict | None:
     return None
 
 
-def _find_config_file(results_dir: Path) -> tuple[Path, str]:
-    run_cfg = results_dir / "config.json"
-    sweep_cfg = results_dir / "sweep_config.json"
-    if run_cfg.exists():
-        return run_cfg, "run"
-    if sweep_cfg.exists():
-        return sweep_cfg, "sweep"
-    raise FileNotFoundError(
-        f"no settings file in: {results_dir}\n"
-        f"  expected: config.json (run) or sweep_config.json (sweep)"
-    )
+def _parameters(run_dir: Path) -> tuple[dict, str]:
+    """条件と，それがどの形の run から来たか．"""
+    doc = _load(run_dir / "config.json")
+    if doc is None:
+        legacy = _load(run_dir / "sweep_config.json")
+        if legacy is None:
+            raise FileNotFoundError(
+                f"no settings file in: {run_dir}\n"
+                f"  expected: config.json (runvault / legacy run) or sweep_config.json (legacy sweep)"
+            )
+        return legacy, "sweep"
+    if "parameters" in doc:
+        meta = runs.load_run_meta(run_dir)
+        return doc["parameters"], str(meta["subcommand"])
+    return doc, "run"
 
 
-def render_run_config(cfg: dict, source: Path) -> str:
-    psi = cfg.get("psi", {})
+def _get(cfg: dict, *keys, default="-"):
+    """runvault の平坦な parameters と legacy の入れ子 `psi` の両方から引く．"""
+    for key in keys:
+        cur: object = cfg
+        for part in key.split("."):
+            if not isinstance(cur, dict) or part not in cur:
+                cur = None
+                break
+            cur = cur[part]
+        if cur is not None:
+            return cur
+    return default
+
+
+def render_conditions(cfg: dict, run_dir: Path, kind: str) -> str:
     vb = cfg.get("voice_beta", {})
     lw = cfg.get("learning_weights", {})
+    # 親 / セル / reproduce は反復シードの元 (`base_seed`) を，反復 1 本の子 run は
+    # 自分が実際に使った `seed` を持つ．どちらかしか無いので名前で区別する．
+    seed_label = "base seed" if "base_seed" in cfg else "seed"
     lines = [
         "=" * 72,
-        "experiment settings (run)",
+        f"experiment conditions ({kind})",
         "=" * 72,
-        f"settings file: {source}",
+        f"run directory: {run_dir}",
         "-" * 72,
-        f"decision_mode     : {cfg.get('decision_mode', '-')}",
-        f"n_individuals     : {cfg.get('n_individuals', '-')} "
-        f"({cfg.get('n_teams', '-')} teams × {cfg.get('team_size', '-')})",
-        f"network           : {cfg.get('network_kind', '-')} "
-        f"(k={cfg.get('network_k', '-')}, β={cfg.get('network_beta', '-')})",
-        f"ψ-update λ/α/β/γ/δ : {psi.get('lambda', '-')} / {psi.get('alpha', '-')} / "
-        f"{psi.get('beta', '-')} / {psi.get('gamma', '-')} / {psi.get('delta', '-')}",
-        f"voice β0/β_ψ/β_f   : {vb.get('intercept', '-')} / {vb.get('beta_psafety', '-')} / "
-        f"{vb.get('beta_fear', '-')}",
-        f"learning w_v/w_h/w_e: {lw.get('w_voice', '-')} / {lw.get('w_help', '-')} / "
-        f"{lw.get('w_error', '-')}",
-        f"γ_L / γ_K / σ_obs  : {cfg.get('gamma_l', '-')} / {cfg.get('gamma_k', '-')} / "
-        f"{cfg.get('sigma_obs', '-')}",
-        f"p_retaliate        : {cfg.get('p_retaliate', '-')}",
-        f"t_max / runs       : {cfg.get('t_max', '-')} / {cfg.get('runs', '-')}",
-        f"seed (core)        : {cfg.get('seed', '-')}",
-        f"LLM temp / seed    : {cfg.get('llm_temperature', '-')} / {cfg.get('llm_seed', '-')}",
-        f"output_dir         : {cfg.get('output_dir', '-')}",
-        "=" * 72,
     ]
+    if kind == "sweep":
+        # 親 run (と legacy の sweep) は格子そのものを持つ．
+        lines += [
+            f"decision_mode      : {_get(cfg, 'decision_mode')}",
+            f"n_teams × team     : {_get(cfg, 'n_teams')} × {_get(cfg, 'team_size')}",
+            f"α values           : {_get(cfg, 'alpha_values')}",
+            f"δ values           : {_get(cfg, 'delta_values')}",
+            f"λ                  : {_get(cfg, 'lambda')}",
+            f"runs/cell          : {_get(cfg, 'runs')}",
+            f"t_max              : {_get(cfg, 't_max')}",
+            f"{seed_label:<19}: {_get(cfg, 'base_seed', 'seed')}",
+        ]
+    else:
+        lines += [
+            f"decision_mode      : {_get(cfg, 'decision_mode')}",
+            f"n_individuals      : {_get(cfg, 'n_individuals')} "
+            f"({_get(cfg, 'n_teams')} teams × {_get(cfg, 'team_size')})",
+            f"network            : {_get(cfg, 'network_kind')} "
+            f"(k={_get(cfg, 'network_k')}, β={_get(cfg, 'network_beta')})",
+            "ψ-update λ/α/β/γ/δ : "
+            f"{_get(cfg, 'lambda', 'psi.lambda')} / {_get(cfg, 'alpha', 'psi.alpha')} / "
+            f"{_get(cfg, 'beta', 'psi.beta')} / {_get(cfg, 'gamma', 'psi.gamma')} / "
+            f"{_get(cfg, 'delta', 'psi.delta')}",
+            f"voice β0/β_ψ/β_f   : {vb.get('intercept', '-')} / {vb.get('beta_psafety', '-')} / "
+            f"{vb.get('beta_fear', '-')}",
+            f"learning w_v/w_h/w_e: {lw.get('w_voice', '-')} / {lw.get('w_help', '-')} / "
+            f"{lw.get('w_error', '-')}",
+            f"γ_L / γ_K / σ_obs  : {_get(cfg, 'gamma_l')} / {_get(cfg, 'gamma_k')} / "
+            f"{_get(cfg, 'sigma_obs')}",
+            f"knowledge_decay    : {_get(cfg, 'knowledge_decay')}",
+            f"p_retaliate        : {_get(cfg, 'p_retaliate')}",
+            f"t_max              : {_get(cfg, 't_max')}",
+            f"runs (replicates)  : {_get(cfg, 'runs')}",
+            f"{seed_label:<19}: {_get(cfg, 'base_seed', 'seed')}",
+            f"LLM temp / seed    : {_get(cfg, 'llm_temperature')} / {_get(cfg, 'llm_seed')}",
+            f"LLM cache path     : {_get(cfg, 'llm_cache_path')}",
+        ]
+    lines.append("=" * 72)
     return "\n".join(lines)
 
 
-def render_sweep_config(cfg: dict, source: Path) -> str:
+def render_identity(meta: dict) -> str:
+    """同一性 — 旧 `llm_meta.json` の model / endpoint / temperature はここ．"""
+    rng = meta.get("rng") or {}
+    llm = meta.get("llm")
     lines = [
-        "=" * 72,
-        f"experiment settings ({cfg.get('command', 'sweep')})",
-        "=" * 72,
-        f"settings file: {source}",
+        "run identity",
         "-" * 72,
-        f"decision_mode     : {cfg.get('decision_mode', '-')}",
-        f"n_teams × team    : {cfg.get('n_teams', '-')} × {cfg.get('team_size', '-')}",
-        f"α values          : {cfg.get('alpha_values', '-')}",
-        f"δ values          : {cfg.get('delta_values', '-')}",
-        f"λ                 : {cfg.get('lambda', '-')}",
-        f"runs/cell         : {cfg.get('runs', '-')}",
-        f"t_max             : {cfg.get('t_max', '-')}",
-        f"seed              : {cfg.get('seed', '-')}",
-        "=" * 72,
+        f"run_uid / slug     : {meta.get('run_uid', '-')} / {meta.get('run_slug', '-')}",
+        f"subcommand         : {meta.get('subcommand', '-')}",
+        f"config_hash        : {meta.get('config_hash', '-')}",
+        f"execution_hash     : {meta.get('execution_hash', '-')}",
+        f"master_seed        : {rng.get('master_seed', '-')}",
+        f"replicate_index    : {rng.get('replicate_index', '-')}",
     ]
+    if llm is not None:
+        lines += [
+            f"LLM provider/model : {llm.get('provider', '-')} / {llm.get('model_snapshot', '-')}",
+            f"LLM temperature    : {llm.get('temperature', '-')}",
+        ]
+    else:
+        # LLM を 1 回も叩かない rule モードの run に «モデル none» を名乗らせない．
+        lines.append("LLM                : (none — rule mode makes zero LLM calls)")
+    lines.append("=" * 72)
     return "\n".join(lines)
 
 
-def render_llm_meta(meta: dict) -> str:
-    lines = [
-        "LLM / determinism metadata",
-        "-" * 72,
-        f"decision_mode     : {meta.get('decision_mode', '-')}",
-        f"model / endpoint  : {meta.get('llm_model', '-')} @ {meta.get('llm_endpoint', '-')}",
-        f"temperature / seed: {meta.get('llm_temperature', '-')} / {meta.get('llm_seed', '-')}",
-        f"LLM calls         : {meta.get('total_calls', '-')} "
-        f"(cache-hit {meta.get('cache_hits', '-')}, "
-        f"{100 * meta.get('cache_hit_rate', 0):.1f}%)",
-        f"final_round       : {meta.get('final_round', '-')}",
-        f"convergence_step  : {meta.get('convergence_step', '-')}",
-        "=" * 72,
-    ]
+def render_scope_metrics(scoped: dict[str, float]) -> str:
+    """run 全体を 1 つの値で表す指標 (旧 `llm_meta.json` の呼び出し数もここ)．"""
+    if not scoped:
+        return ""
+    lines = ["run-scope metrics", "-" * 72]
+    for name in sorted(scoped):
+        lines.append(f"{name:<19}: {scoped[name]}")
+    lines.append("=" * 72)
     return "\n".join(lines)
 
 
@@ -109,33 +159,45 @@ def main(argv: list[str] | None = None) -> int:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--results-dir", "--results_dir", default="results/latest")
+    parser.add_argument("--results-dir", "--results_dir", default=None)
+    parser.add_argument(
+        "--subcommand", default="run",
+        help="which subcommand's latest run to show when --results-dir is omitted",
+    )
     parser.add_argument("--json", action="store_true", help="emit JSON instead of a table.")
     args = parser.parse_args(argv)
 
-    results_dir = Path(args.results_dir)
-    if not results_dir.exists():
-        print(f"error: directory does not exist: {results_dir}", file=sys.stderr)
+    run_dir = runs.resolve_run_dir(args.results_dir, subcommand=args.subcommand)
+    if not run_dir.exists():
+        print(f"error: directory does not exist: {run_dir}", file=sys.stderr)
         return 1
 
     try:
-        cfg_path, kind = _find_config_file(results_dir)
+        cfg, kind = _parameters(run_dir)
     except FileNotFoundError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    cfg = _load(cfg_path)
-    meta = _load(results_dir / "llm_meta.json")
+    meta = runs.load_run_meta(run_dir, required=False)
+    # legacy な wide `metrics.csv` に run スコープの行は無い (step 列すら無い)．
+    scoped = runs.scope_metrics(run_dir) if meta is not None else {}
 
     if args.json:
-        payload = {"source": str(cfg_path), "kind": kind, "config": cfg, "llm_meta": meta}
+        payload = {
+            "run_dir": str(run_dir),
+            "kind": kind,
+            "parameters": cfg,
+            "run": meta,
+            "run_scope_metrics": scoped,
+        }
         print(json.dumps(payload, indent=2, ensure_ascii=False))
-    else:
-        if kind == "run":
-            print(render_run_config(cfg, cfg_path))
-        else:
-            print(render_sweep_config(cfg, cfg_path))
-        if meta is not None:
-            print(render_llm_meta(meta))
+        return 0
+
+    print(render_conditions(cfg, run_dir, kind))
+    if meta is not None:
+        print(render_identity(meta))
+    body = render_scope_metrics(scoped)
+    if body:
+        print(body)
     return 0
 
 

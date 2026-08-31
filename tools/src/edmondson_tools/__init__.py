@@ -2,6 +2,7 @@
 for the Edmondson (1999) Psychological Safety & Team Learning replication.
 
 Modules:
+- `runs`                   — run ディレクトリの解決と，旧 CSV 形式への組み直し.
 - `visualize`              — ψ / L / Π time series, mediation scatter, ICC trace.
 - `visualize_sweep`        — mediation-ratio / R² heatmaps over α × δ.
 - `show_experiment_settings` — pretty-print a results directory's config / meta.

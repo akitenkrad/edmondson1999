@@ -30,7 +30,7 @@ Team learning `L_k` aggregates the within-team voice / help-request / error-talk
 - **Deterministic socsim core** — individual initialisation, within-team network generation, scheduling, and the five non-LLM mechanisms. Given a seed, the `rule` mode reproduces bit-for-bit.
 - **Non-deterministic LLM layer** — the `voice_decision` mechanism only. Pseudo-determinised by `socsim-llm`'s `CachingClient` (`hash(prompt+model)` → response cache), `temperature=0`, and a fixed `(agent_id, t)`-derived seed. The cache — not the model — is the reproducibility mechanism.
 
-Each run writes `llm_meta.json` recording decision-mode / model / endpoint / temperature / seed / cache-hit rate.
+Each LLM run records model / endpoint / temperature in `run.json`'s `llm` block, and the call and cache-hit counts as the run-scope metrics `llm_calls` / `llm_cache_hits` / `llm_cache_hit_rate`. A `rule` run declares no model: it never reaches one.
 
 ## Install & Quick start
 
@@ -66,7 +66,7 @@ cargo run --release -- run --decision-mode llm \
 uv sync
 uv run edmondson-tools visualize                 # ψ/L/Π series + mediation scatter + ICC trace
 uv run edmondson-tools visualize-sweep           # mediation / R² / ICC heatmaps over α × δ
-uv run edmondson-tools show-experiment-settings  # config / sweep_config / llm_meta
+uv run edmondson-tools show-experiment-settings  # conditions + run identity + run-scope metrics
 uv run edmondson-tools reproduce                 # Table 4-8-style Baron & Kenny report + bootstrap CI
 ```
 
@@ -75,7 +75,7 @@ uv run edmondson-tools reproduce                 # Table 4-8-style Baron & Kenny
 ```
 edmondson1999/
 ├── simulation/                       # Rust socsim ABM
-│   ├── Cargo.toml                    # socsim-{core,engine,net,metrics,llm,results} git deps
+│   ├── Cargo.toml                    # socsim-{core,engine,net,metrics,llm} + runvault git deps
 │   ├── src/
 │   │   ├── lib.rs / main.rs          # CLI: run / sweep / reproduce
 │   │   ├── config.rs                 # Config / DecisionMode / PsiParams / VoiceBeta / NetworkKind
@@ -83,23 +83,30 @@ edmondson1999/
 │   │   ├── mechanisms.rs             # 6 mechanisms × 6 phases; rule vs LLM decision (exclusive)
 │   │   ├── prompts.rs                # voice-decision prompt + decision JSON parser
 │   │   ├── llm.rs                    # socsim-llm shared-harness re-export shim
-│   │   ├── simulation.rs             # init_world + run_with_client + CSV/JSON writers + anchors
+│   │   ├── simulation.rs             # init_world + run_with_client + anchors
+│   │   ├── record.rs                 # runvault: what goes where (read this first)
 │   │   └── metrics.rs                # ICC + OLS + Baron & Kenny three-step (paper-specific)
 │   └── tests/integration_test.rs     # rule bit-determinism + scripted-LLM smoke
 ├── tools/                            # Python edmondson-tools
-│   └── src/edmondson_tools/{cli,visualize,visualize_sweep,show_experiment_settings,
-│                            reproduce_paper}.py
+│   └── src/edmondson_tools/{cli,runs,visualize,visualize_sweep,
+│                            show_experiment_settings,reproduce_paper}.py
 ├── docs/                             # bilingual: architecture, cli, usecases, visualization, reproduction
-└── results/                          # runtime outputs (gitignored)
-    ├── latest -> {YYYYMMDD_HHMMSS}/
-    └── {YYYYMMDD_HHMMSS}/
-        ├── config.json | sweep_config.json
-        ├── teams.csv                # t, team_id, psi, learning, performance, efficacy, support, coaching
-        ├── individuals.csv          # t, team_id, agent_id, psi_i, voice, fear, retaliated
-        ├── metrics.csv              # t, icc_psi, icc_learning, mediation_ratio, beta_psi_l, beta_l_pi
-        ├── team_cross_section.csv   # pooled per-team second-half averages (one row per team per run)
-        ├── sweep_summary.csv        # sweep: one row per (α, δ, run)
-        └── llm_meta.json            # LLM provenance + cache-hit + determinism note
+└── results/                          # runtime outputs (gitignored) — runvault run directories
+    └── edmondson-psafety/            # one directory per run; runvault names them
+        ├── run_.../                  # `run` の親: config.json (conditions) only
+        ├── run-replicate_.../        # one per replicate
+        │   ├── run.json              # run_uid / config_hash / master_seed / replicate_index / llm
+        │   ├── config.json           # the conditions (`parameters`)
+        │   ├── metrics.csv           # long: run_uid, step, step_unit, scope, name, value
+        │   ├── events.jsonl          # observation = team panel, terminal = team cross-section
+        │   ├── artifacts/individuals.csv  # t, team_id, agent_id, psi_i, voice, fear, retaliated
+        │   ├── manifest.csv / status.json
+        │   └── lock/                 # Cargo.lock / uv.lock snapshots
+        ├── sweep_.../                # `sweep` の親: the grid definition
+        ├── sweep-point_.../          # one per (α, δ) cell; terminal = one row per trial
+        ├── reproduce_.../            # terminal = one row per trial; reference.csv = paper values
+        └── figures/<run_slug>/       # PNG / table4_report.csv — written after the run ends,
+                                      # so outside the run directory and its manifest
 ```
 
 ## Documentation

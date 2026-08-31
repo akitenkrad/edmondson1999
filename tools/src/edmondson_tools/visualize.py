@@ -1,14 +1,22 @@
 #!/usr/bin/env python3
-"""visualize.py — single-run visualization for the Edmondson 1999 model.
+"""visualize.py — single-replicate visualization for the Edmondson 1999 model.
 
-Reads `results/latest` (or `--results-dir`) and produces:
+Reads one replicate of a `run` and produces:
   - psi_learning_perf_timeseries.png : mean ψ̄ / L / Π per step (the causal chain)
-  - mediation_scatter.png            : team ψ̄ → L → Π scatter (final-tick cross-section)
+  - mediation_scatter.png            : team ψ̄ → L → Π scatter (second-half cross-section)
   - icc_trace.png                    : ICC(ψ) / ICC(L) over time + mediation ratio
+
+run ディレクトリは `runvault path --latest --subcommand run` が答える．反復は子 run に
+分かれているので，旧 `teams.csv` / `metrics.csv` は `edmondson_tools.runs` が組み直す
+(`runs.py` の冒頭を参照)．図はチーム間の散らばりを見るものなので反復をプールしない
+— 旧実装が «最後の反復» を描いていたのに合わせ，既定も最後の反復である
+(`--replicate` で選べる)．反復をまたいでチームをプールすると回帰の検出力が
+実験計画より大きくなり，`reproduce` が避けている過大評価と同じことが図の上で起きる．
 
 Usage:
     uv run edmondson-tools visualize
-    uv run edmondson-tools visualize --results-dir results/latest --output-dir out
+    uv run edmondson-tools visualize --replicate 0
+    uv run edmondson-tools visualize --results-dir results/20260530_000000   # legacy も可
 """
 
 from __future__ import annotations
@@ -16,10 +24,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+
+from edmondson_tools import runs
 
 COLOR_BG = "#FAFAF8"
 C_PSI = "#534AB7"
@@ -27,20 +38,26 @@ C_L = "#0F6E56"
 C_PI = "#F4A259"
 
 
-def load_config(results_dir: str) -> dict | None:
-    path = os.path.join(results_dir, "config.json")
-    if os.path.exists(path):
-        with open(path, encoding="utf-8") as f:
-            return json.load(f)
-    return None
+def load_config(run_dir: str) -> dict | None:
+    """条件．runvault の `config.json` は `{..., parameters}` の封筒なので中身を取る．
 
-
-def plot_timeseries(results_dir: str, output_dir: str, cfg: dict | None) -> None:
-    path = os.path.join(results_dir, "teams.csv")
+    ψ-update の重みは runvault の parameters では最上位に平坦化されている
+    (`sweep` が掃く群なので `runvault.read.sweep_events_table` が条件列にできる形に
+    してある)．legacy な flat `config.json` は `psi` に入れ子で持っている．
+    """
+    path = os.path.join(run_dir, "config.json")
     if not os.path.exists(path):
-        print(f"[visualize] no teams.csv at {results_dir}; skipping time series")
-        return
-    df = pd.read_csv(path)
+        return None
+    with open(path, encoding="utf-8") as f:
+        doc = json.load(f)
+    cfg = doc["parameters"] if isinstance(doc, dict) and "parameters" in doc else doc
+    if "psi" not in cfg:
+        cfg = dict(cfg)
+        cfg["psi"] = {k: cfg.get(k) for k in ("lambda", "alpha", "beta", "gamma", "delta")}
+    return cfg
+
+
+def plot_timeseries(df: pd.DataFrame, output_dir: str, cfg: dict | None) -> None:
     g = df.groupby("t").agg(
         psi=("psi", "mean"),
         learning=("learning", "mean"),
@@ -67,11 +84,7 @@ def plot_timeseries(results_dir: str, output_dir: str, cfg: dict | None) -> None
     print(f"[visualize] wrote {out}")
 
 
-def plot_mediation_scatter(results_dir: str, output_dir: str) -> None:
-    path = os.path.join(results_dir, "teams.csv")
-    if not os.path.exists(path):
-        return
-    df = pd.read_csv(path)
+def plot_mediation_scatter(df: pd.DataFrame, output_dir: str) -> None:
     t_last = df["t"].max()
     t_half = t_last // 2
     tail = df[df["t"] >= t_half]
@@ -112,11 +125,7 @@ def plot_mediation_scatter(results_dir: str, output_dir: str) -> None:
     print(f"[visualize] wrote {out}")
 
 
-def plot_icc_trace(results_dir: str, output_dir: str) -> None:
-    path = os.path.join(results_dir, "metrics.csv")
-    if not os.path.exists(path):
-        return
-    df = pd.read_csv(path)
+def plot_icc_trace(df: pd.DataFrame, output_dir: str) -> None:
     fig, ax = plt.subplots(figsize=(9, 5))
     fig.patch.set_facecolor(COLOR_BG)
     ax.set_facecolor(COLOR_BG)
@@ -144,18 +153,35 @@ def main(argv: list[str] | None = None) -> int:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--results-dir", "--results_dir", default="results/latest")
+    parser.add_argument("--results-dir", "--results_dir", default=None)
     parser.add_argument("--output-dir", "--output_dir", default=None)
+    parser.add_argument(
+        "--replicate", type=int, default=None,
+        help="which replicate (child run) to draw; default is the last one",
+    )
     args = parser.parse_args(argv)
 
-    results_dir = args.results_dir
-    output_dir = args.output_dir or results_dir
-    os.makedirs(output_dir, exist_ok=True)
+    run_dir = runs.resolve_run_dir(args.results_dir, subcommand="run")
+    replicates = runs.replicate_dirs(run_dir)
+    if args.replicate is None:
+        child = replicates[-1]
+    elif not 0 <= args.replicate < len(replicates):
+        print(
+            f"error: --replicate {args.replicate} is out of range "
+            f"(this run has {len(replicates)})",
+            file=sys.stderr,
+        )
+        return 1
+    else:
+        child = replicates[args.replicate]
+    output_dir = str(runs.analysis_output_dir(run_dir, args.output_dir))
 
-    cfg = load_config(results_dir)
-    plot_timeseries(results_dir, output_dir, cfg)
-    plot_mediation_scatter(results_dir, output_dir)
-    plot_icc_trace(results_dir, output_dir)
+    cfg = load_config(str(child))
+    teams = runs.teams_panel(child)
+    metrics = runs.replicate_metrics(child)
+    plot_timeseries(teams, output_dir, cfg)
+    plot_mediation_scatter(teams, output_dir)
+    plot_icc_trace(metrics, output_dir)
     return 0
 
 

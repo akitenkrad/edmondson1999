@@ -6,7 +6,23 @@
 
 ## `run` — 単一構成
 
-`--runs` 回の独立試行 (各々 `--seed` から派生した新しいシード) を実行し，最後の試行の long-format CSV と全試行をプールした `team_cross_section.csv` を書き出す．
+`--runs` 回の独立した反復 (各々 `--seed` から派生した新しいシード) を実行する．
+
+反復は自分の時系列を持つので，**反復 1 本が子 run 1 本** になる．親は条件と反復リストを
+宣言するだけで (1 本のシミュレーションではないので `master_seed` は名乗らない．base seed は
+`/base_seed` と `seed_pointers` 経由で `execution_hash` に残る)，子がそれぞれ自分の
+`master_seed` と `replicate_index` を持つ．同一条件の反復は `config_hash` が一致するので，
+«どれとどれが同じ条件の繰り返しか» はディレクトリ名ではなく機械が答える．
+
+子 run が記録するもの:
+
+| 何を | どこへ |
+|------|--------|
+| ステップごとの ICC・回帰係数 | `metrics.csv` の `scope=run` ステップ指標 |
+| チームのパネル (ステップ × チーム) | `events.jsonl` の `observation` (`unit_id` がチーム) |
+| チームの断面 (後半平均) | `events.jsonl` の `terminal` (1 チーム 1 行) |
+| 個人のパネル | `artifacts/individuals.csv` に表のまま |
+| `icc_learning_stable` / `final_round` / `n_units` / `convergence_step` | `metrics.csv` の run スコープ行 |
 
 | フラグ | 既定 | 意味 |
 |------|------|------|
@@ -28,11 +44,17 @@
 | `--llm-temperature` | `0.0` | LLM 温度 (llm モード)． |
 | `--llm-seed` | `0` | LLM シードオフセット (llm モード)． |
 | `--cache-path` | `.llm_cache/cache.json` | プロンプト→応答キャッシュパス (llm モード)． |
-| `--output-dir` | `results` | 出力ベースディレクトリ． |
+| `--output-dir` | `results` | runvault の results root． |
 
 ## `sweep` — α × δ 感度分析
 
-`α × δ` の直積でセルあたり `--runs` 試行を実行し，`sweep_summary.csv` に `(α, δ, run)` ごとに 1 行を書く．
+`α × δ` の直積でセルあたり `--runs` 試行を実行する．
+
+sweep の試行は各試行の最終断面しか見ないので，自分の時系列を持たず `terminal` 行 1 本で
+言い尽くせる．そこで **セル 1 つが子 run 1 本**，試行 1 本がその子の `events.jsonl` の
+`terminal` 行 1 本になる．セルの平均は run スコープの `mean_*` 指標である
+(形は «何を観測したか» に従わせてあり，一律の規則ではない — `run` の反復は時系列を
+持つので子 run に割っている)．
 
 | フラグ | 既定 | 意味 |
 |------|------|------|
