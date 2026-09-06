@@ -17,7 +17,7 @@ use std::fs;
 use std::path::Path;
 
 use clap::{Parser, Subcommand};
-use runvault::{Lineage, Run, RunOptions};
+use runvault::{Lineage, Run, RunOptions, Stage};
 use serde::Serialize;
 
 use edmondson_team::config::{
@@ -30,7 +30,8 @@ use edmondson_team::record::{
     GROUP_SEED_POINTERS, HASH_EXCLUDE, REPLICATE_SEED_POINTERS, REPO_ID,
 };
 use edmondson_team::simulation::{
-    anchor_report_from_result, run_with_client, save_individuals, AnchorReport, SimulationResult,
+    anchor_report_from_result, run_with_client_observed, save_individuals, AnchorReport,
+    SimulationResult,
 };
 
 use socsim_llm::LlmClient;
@@ -285,9 +286,16 @@ fn ensure_cache_dir(cfg: &Config, cache_path: &str) {
 }
 
 /// 試行 1 本を回す (`sweep` / `reproduce`)．run ディレクトリは作らない．
-fn run_trial(cfg: &Config) -> SimulationResult {
+///
+/// 進捗の 1 単位は 1 ステップ．費用がそこにあるからで，1 ステップは全チームの
+/// 全メンバーについて決定を出し，LLM モードではその 1 つ 1 つがモデル呼び出しに
+/// なる．試行を単位にすると，ライブの 1 本は 0/1 と出したきり終わりまで黙る．
+/// `stage` は呼び出し側が開ける — コマンド全体で 1 つにすることで，条件をまたいでも
+/// 割合が途中で 100% に戻らない．
+fn run_trial(cfg: &Config, stage: &mut Stage) -> SimulationResult {
     let client = build_client(cfg);
-    run_with_client(cfg, client).unwrap_or_else(|e| panic!("trial run failed: {e}"))
+    run_with_client_observed(cfg, client, |_| stage.tick())
+        .unwrap_or_else(|e| panic!("trial run failed: {e}"))
 }
 
 // --------------------------------------------------------------------------- //
@@ -301,6 +309,7 @@ fn run_replicate(
     seed: u64,
     replicate_index: usize,
     lineage: &Lineage,
+    stage: &mut Stage,
 ) -> SimulationResult {
     let client = build_client(cfg);
     let llm = client
@@ -330,8 +339,8 @@ fn run_replicate(
 
     let mut child = Run::start(options).expect("runvault: 子 run の開始に失敗");
 
-    let result =
-        run_with_client(cfg, client).unwrap_or_else(|e| panic!("replicate run failed: {e}"));
+    let result = run_with_client_observed(cfg, client, |_| stage.tick())
+        .unwrap_or_else(|e| panic!("replicate run failed: {e}"));
 
     record::log_replicate(&mut child, cfg, &result);
     if cfg.decision_mode.is_llm() {
@@ -407,13 +416,16 @@ fn cmd_run(args: RunArgs) {
     let (mut pooled_icc, mut pooled_beta_psi_l, mut pooled_r2, mut pooled_med) =
         (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let mut last: Option<SimulationResult> = None;
+    // 親 run に stage を 1 つ．反復はすべて同じ条件・同じ t_max なので重みでは
+    // なく数える．子 run ごとに開け直すと小さな 100% が並ぶだけになる．
+    let mut stage = parent.stage("steps", runs * base_cfg.t_max as usize);
     for run_idx in 0..runs {
         let seed = record::replicate_seed(base_cfg.seed, run_idx);
         let cfg = Config {
             seed,
             ..base_cfg.clone()
         };
-        let result = run_replicate(&args.output_dir, &cfg, seed, run_idx, &lineage);
+        let result = run_replicate(&args.output_dir, &cfg, seed, run_idx, &lineage, &mut stage);
         let rep = anchor_report_from_result(&result);
         pooled_icc.push(rep.icc_psi);
         pooled_beta_psi_l.push(rep.beta_psi_l);
@@ -433,6 +445,9 @@ fn cmd_run(args: RunArgs) {
         }
         last = Some(result);
     }
+    // manifest.csv は finish() で封をされる．その後に 1 行足せば，manifest が
+    // 食い違うダイジェストを持つことになる．
+    stage.close();
 
     let dir = parent.finish().expect("runvault: 親 run の完了に失敗");
 
@@ -521,6 +536,10 @@ fn cmd_sweep(args: SweepArgs) {
     println!("------------------------------------------------------------");
 
     let mut idx = 0usize;
+    // グリッド全体で stage を 1 つ．掃引しているのは α と δ の係数で，どちらも
+    // 仕事の量を変えない (チーム数も t_max も固定) ので，重みではなく数える．
+    let mut stage = parent.stage("steps", n_total * args.t_max as usize);
+
     for &alpha in &alphas {
         for &delta in &deltas {
             let cell_cfg = Config {
@@ -571,7 +590,7 @@ fn cmd_sweep(args: SweepArgs) {
                     runs: 1,
                     ..cell_cfg.clone()
                 };
-                let result = run_trial(&cfg);
+                let result = run_trial(&cfg, &mut stage);
                 let rep = anchor_report_from_result(&result);
                 record::log_trial(
                     &mut child,
@@ -593,6 +612,8 @@ fn cmd_sweep(args: SweepArgs) {
             child.finish().expect("runvault: sweep 子 run の完了に失敗");
         }
     }
+
+    stage.close();
 
     let dir = parent
         .finish()
@@ -661,6 +682,7 @@ fn cmd_reproduce(args: ReproduceArgs) {
     // teams into one giant regression would inflate the statistical power far
     // beyond the paper's design (and make every effect spuriously significant).
     let mut reps = Vec::with_capacity(runs);
+    let mut stage = run.stage("steps", runs * args.t_max as usize);
     for run_idx in 0..runs {
         let seed = record::replicate_seed(args.seed, run_idx);
         let cfg = Config {
@@ -668,7 +690,7 @@ fn cmd_reproduce(args: ReproduceArgs) {
             runs: 1,
             ..base_cfg.clone()
         };
-        let result = run_trial(&cfg);
+        let result = run_trial(&cfg, &mut stage);
         let rep = anchor_report_from_result(&result);
         record::log_trial(
             &mut run,
@@ -680,6 +702,7 @@ fn cmd_reproduce(args: ReproduceArgs) {
         );
         reps.push(rep);
     }
+    stage.close();
     record::log_reproduce_summary(&mut run, &reps);
     record::log_paper_reference(&mut run);
     let rep = record::mean_report(&reps);
