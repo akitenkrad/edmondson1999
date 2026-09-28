@@ -70,6 +70,11 @@ uv run edmondson-tools show-experiment-settings  # 実験条件 + run の同一�
 uv run edmondson-tools reproduce                 # Table 4-8 風 Baron & Kenny レポート + ブートストラップ CI
 ```
 
+
+## Scratch run
+
+開発中・デバッグ中・動作確認の実行には `--scratch` を付ける．run は `results/_scratch/` に作られ，同期されない．最新の scratch run は `runvault path --scratch` で取得できる．
+
 ## リポジトリ構成
 
 ```
