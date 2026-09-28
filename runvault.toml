@@ -1,3 +1,183 @@
-# Metric descriptions are not written yet (MYTASK-3382). Until they are,
-# runvault records undeclared metrics instead of refusing them.
-require_docs = false
+# 指標が何を測っているか (runvault の宣言．rs-runvault docs/metrics.ja.md)．
+#
+# 名前は `simulation/src/record.rs` が書いているものと一致していなければならない．
+# ステップ指標はその時点のチーム横断統計，`*_stable` と reproduce 指標は後半時間平均
+# から作る安定推定であり，同名にしない．
+#
+# `direction` は «どちらが良いか»．心理的安全性・学習・業績の関係を記述する統計量
+# なので，仮説支持数を含めて `none` とする．
+
+# --- ステップごと (scope=run, step=t) -------------------------------------
+
+[metrics."icc_psi"]
+meaning   = "そのステップの個人心理的安全性に対するチーム内級内相関係数"
+unit      = "correlation"
+direction = "none"
+scope     = ["run"]
+
+[metrics."icc_learning"]
+meaning   = "そのステップの個人発言指標に対するチーム内級内相関係数"
+unit      = "correlation"
+direction = "none"
+scope     = ["run"]
+
+[metrics."mediation_ratio"]
+meaning   = "心理的安全性から業績への効果のうち学習行動が媒介する割合"
+unit      = "ratio"
+direction = "none"
+scope     = ["run"]
+
+[metrics."beta_psi_l"]
+meaning   = "チーム心理的安全性からチーム学習行動への OLS 回帰係数"
+unit      = "coefficient"
+direction = "none"
+scope     = ["run"]
+
+[metrics."beta_l_pi"]
+meaning   = "チーム学習行動からチーム業績への OLS 回帰係数"
+unit      = "coefficient"
+direction = "none"
+scope     = ["run"]
+
+# --- 反復 1 本の run 全体 -------------------------------------------------
+
+[metrics."final_round"]
+meaning   = "停止したときの最終ラウンド番号"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
+
+[metrics."icc_learning_stable"]
+meaning   = "個人ごとの後半時間平均発言率に対するチーム内級内相関係数"
+unit      = "correlation"
+direction = "none"
+scope     = ["run"]
+
+[metrics."convergence_step"]
+meaning   = "状態変化が収束しきい値内に初めて入ったステップ"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
+
+[metrics."llm_calls"]
+meaning   = "この run が行った LLM の呼び出し回数"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
+
+[metrics."llm_cache_hits"]
+meaning   = "LLM 呼び出しのうちキャッシュで応答した回数"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
+
+[metrics."llm_cache_hit_rate"]
+meaning   = "LLM 呼び出しのうちキャッシュで応答した割合"
+unit      = "ratio"
+direction = "up"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+# --- sweep セルの試行平均 --------------------------------------------------
+
+[metrics."mean_icc_psi"]
+meaning   = "sweep セルの試行群にわたる心理的安全性 ICC の平均"
+unit      = "correlation"
+direction = "none"
+scope     = ["run"]
+
+[metrics."mean_beta_psi_l"]
+meaning   = "sweep セルの試行群にわたる心理的安全性から学習行動への回帰係数の平均"
+unit      = "coefficient"
+direction = "none"
+scope     = ["run"]
+
+[metrics."mean_r2_psi_l"]
+meaning   = "sweep セルの試行群にわたる心理的安全性による学習行動回帰の決定係数 R² の平均"
+unit      = "ratio"
+direction = "none"
+scope     = ["run"]
+
+[metrics."mean_r2_l_pi"]
+meaning   = "sweep セルの試行群にわたる学習行動によるチーム業績回帰の決定係数 R² の平均"
+unit      = "ratio"
+direction = "none"
+scope     = ["run"]
+
+[metrics."mean_mediation_ratio"]
+meaning   = "sweep セルの試行群にわたる学習行動の媒介割合の平均"
+unit      = "ratio"
+direction = "none"
+scope     = ["run"]
+
+[metrics."mean_beta_support_psi"]
+meaning   = "sweep セルの試行群にわたるコンテクスト支援から心理的安全性への回帰係数の平均"
+unit      = "coefficient"
+direction = "none"
+scope     = ["run"]
+
+[metrics."mean_efficacy_partial_t"]
+meaning   = "sweep セルの試行群にわたる，心理的安全性統制後の効力感係数の t 値の平均"
+unit      = "t_statistic"
+direction = "none"
+scope     = ["run"]
+
+[metrics."mean_hypotheses_supported"]
+meaning   = "sweep セルの試行群にわたる，原著の 8 仮説のうち支持された本数の平均"
+unit      = "count"
+direction = "none"
+range     = [0.0, 8.0]
+scope     = ["run"]
+
+# --- reproduce の原著アンカー対応値 --------------------------------------
+
+[metrics."r2_psi_l"]
+meaning   = "心理的安全性による学習行動回帰の決定係数 R²"
+unit      = "ratio"
+direction = "none"
+scope     = ["run"]
+
+[metrics."r2_l_pi"]
+meaning   = "学習行動によるチーム業績回帰の決定係数 R²"
+unit      = "ratio"
+direction = "none"
+scope     = ["run"]
+
+[metrics."beta_psi_residual"]
+meaning   = "学習行動を加えた業績回帰に残る心理的安全性の回帰係数"
+unit      = "coefficient"
+direction = "none"
+scope     = ["run"]
+
+[metrics."beta_psi_residual_p"]
+meaning   = "学習行動を加えた業績回帰に残る心理的安全性係数の p 値"
+unit      = "probability"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."beta_support_psi"]
+meaning   = "コンテクスト支援から心理的安全性への OLS 回帰係数"
+unit      = "coefficient"
+direction = "none"
+scope     = ["run"]
+
+[metrics."beta_support_psi_p"]
+meaning   = "コンテクスト支援から心理的安全性への回帰係数の p 値"
+unit      = "probability"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."efficacy_partial_t"]
+meaning   = "心理的安全性を統制した学習行動回帰におけるチーム効力感係数の t 値"
+unit      = "t_statistic"
+direction = "none"
+scope     = ["run"]
+
+[metrics."hypotheses_supported"]
+meaning   = "原著の 8 仮説のうち再現結果が支持した本数"
+unit      = "count"
+direction = "none"
+range     = [0.0, 8.0]
+scope     = ["run"]
