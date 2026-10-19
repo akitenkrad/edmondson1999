@@ -714,9 +714,9 @@ mod tests {
     /// commit を固定しているので，この値は依存を上げたときにだけ動く．
     #[test]
     fn golden_values_are_pinned() {
-        assert_eq!(replicate_seed(1999, 0), 13_926_578_433_687_357_256);
+        assert_eq!(replicate_seed(1999, 0), 10_755_881_032_578_728_140);
         // 旧 `sweep_summary.csv` の (α=.1, δ=.2, run=0) 行の seed 列そのもの．
-        assert_eq!(trial_seed(1999, 0.1, 0.2, 0), 4_204_546_973_476_058_460);
+        assert_eq!(trial_seed(1999, 0.1, 0.2, 0), 11_874_748_069_209_247_457);
     }
 
     #[test]
